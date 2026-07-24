@@ -18,6 +18,8 @@
 ・端末への保存の考え方（何を残し、何を捨てるか）
 ・取得タイミングと更新の考え方（概要）
 ・ユーザーによるデータソース選択と、Adapterの抽象化方針
+・銘柄マスタ取得用SymbolAdapterの抽象化
+・銘柄検索（search_cache）の役割分担
 
 【決めない（別設計 or 後続）】
 ・インジケーター計算ロジック本体 → indicators.py / 00_Master_Design
@@ -34,6 +36,7 @@
 ・時系列の株価はJSON一括保存しない。正規化した行データとして端末にキャッシュする。
 ・設定系（MA表示、フィルター等）は従来どおりJSON。株価データとは保存形式を分ける。
 ・具体的なAdapter名（YahooJpAdapterなど）をアプリ全体に散らばせない。抽象化された JP_Adapter / US_Adapter を通して呼び出す。
+・銘柄マスタ取得・検索も同様に抽象化する。
 
 
 -----------------------------------------------------------------
@@ -226,9 +229,10 @@
 ・各データソースごとに1つの具体的なAdapterクラスを持つ
 ・アプリ本体は「具体的なAdapter名」を直接書かない
 ・ユーザーが選んだソースに応じて、抽象的な JP_Adapter / US_Adapter を通して呼び出す
+・銘柄マスタ取得・検索用のSymbolAdapterも同様に抽象化する
 
 
-【各ソース Adapter がやること】
+【価格データ用 Adapter がやること】
   1. ソースからデータを取る
   2. 銘柄コードを内部形式へ直す
   3. 日付・数値を共通スキーマへ直す
@@ -237,20 +241,18 @@
   6. 共通形の配列/行として返す
 
 
-【新規追加メソッド】
+【新規追加メソッド（価格データ用）】
 ・def fetch_snapshot(self, symbol_id: str) -> dict:
     """最新スナップショット（open/high/low/last_price/volume 等）を返す"""
     # 各ソース固有のquoteエンドポイント／ライブラリをここで呼び出し
     # 正規化して latest_snapshots 行形式の dict を返す
 
 
-【共通メソッド名（必須）】
-すべての具体的なAdapterは、以下のメソッド名を必ず実装すること：
+【共通メソッド名（価格データ用・必須）】
+すべての具体的な価格Adapterは、以下のメソッド名を必ず実装すること：
 
 ・fetch_daily_bars(symbol_id, ...) → 確定日足を共通スキーマで返す
 ・fetch_snapshot(symbol_id) → 最新スナップショット（latest_snapshots形）を返す
-
-この共通化により、呼び出し側は中身がYahooかEODHDかを気にせずに済む。
 
 
 【ユーザーによるデータソース選択】
@@ -268,7 +270,7 @@
 選択結果はユーザー設定として永続化する。
 
 
-【Adapterの解決方法（Factory）】
+【価格データ用 Adapter の解決方法（Factory）】
 ユーザー設定を元に、実際のAdapterインスタンスを返す小さな工場を用意する。
 
 例：
@@ -287,23 +289,81 @@ def get_us_adapter():
     elif 設定["us_source"] == "eodhd_commercial":
         return EodhdAdapter(mode="commercial")  # 将来用
 
-アプリの他の部分（日足バッチ、気配値更新、チャート描画など）は、
-必ずこの get_jp_adapter() / get_us_adapter() を通してAdapterを取得し、
-具体的なクラス名を直接書かない。
 
-
-【Adapter 一覧（更新）】
+【価格データ用 Adapter 一覧】
 ・YahooJpAdapter … fetch_daily_bars + fetch_snapshot 実装
 ・YahooUsAdapter … 同上
 ・EodhdAdapter … 同上（個人契約／商用ライセンスで共用。__init__ で api_key と mode を受け取る）
 ・JquantsAdapter … fetch_daily_bars + fetch_snapshot 実装（中身の詳細は優先度低めで後から埋めても可。骨格は他と揃える）
 
 
+-----------------------------------------------------------------
+7-B. 銘柄マスタ・検索用 SymbolAdapter
+-----------------------------------------------------------------
+
+【基本方針】
+・銘柄マスタ情報の取得と、キーワード検索もソースごとに専用のSymbolAdapterを持つ
+・価格データ用と同様に、抽象化された Factory を通して呼び出す
+・アプリ本体は具体的なクラス名を直接書かない
+
+
+【SymbolAdapter がやること】
+  1. ソースから銘柄マスタ情報を取る
+  2. 銘柄コードを内部形式へ直す
+  3. 共通の銘柄マスタ形に直す
+  4. キーワード検索（search_symbols）を提供する
+  5. 共通形の dict / list として返す
+
+
+【共通メソッド名（SymbolAdapter・必須）】
+・fetch_symbol_info(symbol_id) → 1銘柄のマスタ情報を返す
+・search_symbols(query: str) → キーワードに一致する候補リストを返す
+
+
+【SymbolAdapter の解決方法（Factory）】
+例：
+
+def get_jp_symbol_adapter():
+    if 設定["jp_source"] == "yahoo_jp":
+        return YahooJpSymbolAdapter()
+    elif 設定["jp_source"] == "jquants":
+        return JquantsSymbolAdapter()
+
+def get_us_symbol_adapter():
+    if 設定["us_source"] == "yahoo_us":
+        return YahooUsSymbolAdapter()
+    elif 設定["us_source"] == "eodhd_personal":
+        return EodhdSymbolAdapter(mode="personal", api_key=...)
+    elif 設定["us_source"] == "eodhd_commercial":
+        return EodhdSymbolAdapter(mode="commercial")
+
+
+【SymbolAdapter 一覧】
+・YahooJpSymbolAdapter
+・YahooUsSymbolAdapter
+・EodhdSymbolAdapter（個人契約／商用ライセンス共用）
+・JquantsSymbolAdapter（骨格は他と同様。詳細実装は後回し可）
+
+
+【search_cache との役割分担】
+・SymbolAdapter は「外部から候補を取ってくるだけ」に専念する
+・search_cache テーブルへの読み書きは SearchService（上位の検索ロジック）が担当する
+
+流れ：
+  1. ユーザーが検索窓にキーワードを入力
+  2. SearchService がまずローカルの search_cache を確認
+  3. キャッシュにあればそれを返す
+  4. なければ該当する SymbolAdapter の search_symbols() を呼ぶ
+  5. 取得結果を search_cache に保存してから返す
+
+この分離により、Adapterの責務が明確になり、キャッシュ戦略を後から変更しやすくなる。
+
+
 【設計の利点】
-・後から新しいデータソース（例: 欧州株、別のUSプロバイダ）を追加しても、
-  影響範囲は「設定画面」と「Factory」だけに抑えられる
+・後から新しいデータソースを追加しても、影響範囲は「設定画面」と「Factory」だけに抑えられる
 ・アプリ本体のコードはソースの違いを知らなくて済む
 ・テスト時にモックAdapterを差し替えやすい
+・価格データ用と銘柄マスタ用で同じ抽象化パターンを使えるため、学習コストが低い
 
 
 -----------------------------------------------------------------
@@ -376,6 +436,8 @@ def get_us_adapter():
 ・[ ] Jクオンツの詳細実装
 ・[ ] データソース選択画面のUI仕様
 ・[ ] AdapterFactory の正式な実装方針
+・[ ] search_cache テーブルの正式なカラム定義
+・[ ] SearchService の実装方針
 
 
 -----------------------------------------------------------------
