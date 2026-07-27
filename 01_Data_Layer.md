@@ -36,7 +36,11 @@
 ・時系列の株価はJSON一括保存しない。正規化した行データとして端末にキャッシュする。
 ・設定系（MA表示、フィルター等）は従来どおりJSON。株価データとは保存形式を分ける。
 ・具体的なAdapter名（YahooJpAdapterなど）をアプリ全体に散らばせない。抽象化された JP_Adapter / US_Adapter を通して呼び出す。
-・銘柄マスタ取得・検索も同様に抽象化する。
+・銘柄マスタ（シンボル一覧や属性情報、検索用キーワードなど）の取得・検索処理についても、同様に抽象化する。直接データソースごとのAPIやテーブルへアクセスする実装は必ず避ける。  
+・必ず「SymbolAdapter（抽象インターフェース）」を介し、データ取得・正規化・保存・検索までを一手に担わせる。
+・例えば JP_Adapter/US_Adapter には get_symbol_master(), search_symbols(keyword), update_master_cache() 等の共通メソッドを用意し、どの国/市場であってもアプリ本体側の呼び出し方は統一する（分岐・条件分けはAdapter側のみで吸収）。
+・取得したシンボル、マスタ情報、検索キーワードは全て “2. 共通データ正規化規則” で定義した関数を通して加工・保存すること。ユーザー入力、生データ、そのまま保存は絶対にしない。
+
 
 
 -----------------------------------------------------------------
@@ -194,11 +198,13 @@ def normalize_romaji(text: str) -> str:
   2. Yahoo（US） … 米国版の米国株取得用
   3. EODHD（US） … 米国株。将来の商用配布・安定供給用。サンプル受領済み
   4. Jクオンツ（JP） … Adapterの骨格は他と同様に実装する（中身は後から埋めても可）
+  ※ここは Adapter 実装の優先度。取得経路の6通り（Business Concept）とは別物。EODHD／Jクオンツは個人契約と商用配布で同一 Adapter を共用する。
 
-【取得経路の想定】
-・基本：ユーザー端末 → 各ソースへ直接取得 → 端末にキャッシュ
-・例外（将来）：当社がEODHD商用ライセンスを持った後は、当社サーバー経由で配布する可能性あり
-・有料ソース（EODHD / 将来のJクオンツ）：ユーザーのAPIキーで叩く想定（ビジネス設計に準拠）
+【取得経路の想定】（00_Business_Concept の6通りに準拠）
+・Yahoo無料・個人契約（EODHD／Jクオンツ）：ユーザー端末が各取得元へ直接取りに行き、端末にキャッシュする
+・商用配布（EODHD／Jクオンツ）：ユーザー端末が当社サーバーへ取りに行き、端末にキャッシュする（当社サーバーが上流から取得）
+・いずれの場合も、取得後は Adapter で共通形に変換してから保存する
+・有料ソースの Adapter は個人契約／商用配布で共用し、違いは api_key の渡し方（ユーザー入力 vs サーバー側）とする
 
 【ソース差分の閉じ込め】
 ・各ソースごとに Adapter（変換係）を1つ置く
@@ -405,22 +411,24 @@ def normalize_romaji(text: str) -> str:
 
 
 【ユーザーによるデータソース選択】
-アプリインストール時または設定画面で、ユーザーに以下を選択させる：
+アプリインストール時または設定画面で、ユーザーに以下を選択させる（※個人契約・Yahoo無料の範囲）：
 
 ・日本株用ソース
   - yahoo_jp
-  - jquants（個人API）
+  - jquants（個人契約・APIキー）
 
 ・米国株用ソース
   - yahoo_us
-  - eodhd_personal（個人APIキー）
-  - eodhd_commercial（将来の商用ライセンス配布。この場合はユーザー選択不要になる可能性あり）
+  - eodhd_personal（個人契約・APIキー）
 
-選択結果はユーザー設定として永続化する。
+※商用配布（EODHD／Jクオンツ）はユーザー選択肢に並べない。当社が商用配布を開始した環境では、端末は当社サーバー向け Adapter／接続先に切り替える（api_key はサーバー側）。
+
+選択結果（Yahoo／個人契約）はユーザー設定として永続化する。
 
 
 【価格データ用 Adapter の解決方法（Factory）】
-ユーザー設定を元に、実際のAdapterインスタンスを返す小さな工場を用意する。
+ユーザー設定（Yahoo／個人契約）を元に、実際のAdapterインスタンスを返す小さな工場を用意する。
+商用配布時はユーザー設定ではなく、アプリ／接続設定側で「当社サーバー向け」に切り替える。
 
 例：
 
@@ -428,18 +436,20 @@ def get_jp_adapter():
     if 設定["jp_source"] == "yahoo_jp":
         return YahooJpAdapter()
     elif 設定["jp_source"] == "jquants":
-        return JquantsAdapter()
+        return JquantsAdapter(api_key=ユーザーのキー)
 
 def get_us_adapter():
     if 設定["us_source"] == "yahoo_us":
         return YahooUsAdapter()
     elif 設定["us_source"] == "eodhd_personal":
-        return EodhdAdapter(mode="personal", api_key=...)
-    elif 設定["us_source"] == "eodhd_commercial":
-        return EodhdAdapter(mode="commercial")  # 将来用
+        return EodhdAdapter(mode="personal", api_key=ユーザーのキー)
+
+# 商用配布時（将来）：端末は当社サーバーから取る接続に切り替える
+# （例：EodhdAdapter(mode="commercial") をサーバー側で使う／端末は自社APIクライアントを使う）
+# api_key はサーバー側の秘密情報。ユーザー設定の選択肢には出さない。
 
 アプリの他の部分（日足バッチ、気配値更新、チャート描画など）は、
-必ずこの get_jp_adapter() / get_us_adapter() を通してAdapterを取得し、
+必ずこの get_jp_adapter() / get_us_adapter()（または商用時の接続切替）を通して取得し、
 具体的なクラス名を直接書かない。
 
 
@@ -474,21 +484,26 @@ def get_us_adapter():
 
 
 【SymbolAdapter の解決方法（Factory）】
+ユーザー設定（Yahoo／個人契約）を元に解決する。
+商用配布時はユーザー設定ではなく、アプリ／接続設定側で「当社サーバー向け」に切り替える。
+
 例：
 
 def get_jp_symbol_adapter():
     if 設定["jp_source"] == "yahoo_jp":
         return YahooJpSymbolAdapter()
     elif 設定["jp_source"] == "jquants":
-        return JquantsSymbolAdapter()
+        return JquantsSymbolAdapter(api_key=ユーザーのキー)
 
 def get_us_symbol_adapter():
     if 設定["us_source"] == "yahoo_us":
         return YahooUsSymbolAdapter()
     elif 設定["us_source"] == "eodhd_personal":
-        return EodhdSymbolAdapter(mode="personal", api_key=...)
-    elif 設定["us_source"] == "eodhd_commercial":
-        return EodhdSymbolAdapter(mode="commercial")
+        return EodhdSymbolAdapter(mode="personal", api_key=ユーザーのキー)
+
+# 商用配布時（将来）：端末は当社サーバーから取る接続に切り替える
+# EODHDへの接続はサーバーだけが行い、端末は自社サーバーから受け取る
+# api_key はサーバー側の秘密情報。ユーザー設定の選択肢には出さない。
 
 
 【SymbolAdapter 一覧】
@@ -741,7 +756,7 @@ def search(self, query: str):
 ・[ ] upsert（同じ日付が来たときの上書き）規則
 ・[ ] 端末DBのテーブル名と型の正式定義
 ・[ ] 取得失敗・レート制限時のリトライ / ユーザー向けメッセージ
-・[ ] サーバー経由配布フェーズへの切り替え方（端末直叩き ↔ 自社サーバー）
+・[ ] 商用配布時の自社サーバーAPIの詳細（エンドポイント・認証・エラー形式）。切替方針自体は §3 取得経路および Factory に記載済み
 ・[ ] Jクオンツの詳細実装
 ・[ ] データソース選択画面のUI仕様
 ・[ ] AdapterFactory の正式な実装方針
