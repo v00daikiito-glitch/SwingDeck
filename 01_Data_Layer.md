@@ -37,9 +37,27 @@
 ・設定系（MA表示、フィルター等）は従来どおりJSON。株価データとは保存形式を分ける。
 ・具体的なAdapter名（YahooJpAdapterなど）をアプリ全体に散らばせない。抽象化された JP_Adapter / US_Adapter を通して呼び出す。
 ・銘柄マスタ（シンボル一覧や属性情報、検索用キーワードなど）の取得・検索処理についても、同様に抽象化する。直接データソースごとのAPIやテーブルへアクセスする実装は必ず避ける。  
-・必ず「SymbolAdapter（抽象インターフェース）」を介し、データ取得・正規化・保存・検索までを一手に担わせる。
-・例えば JP_Adapter/US_Adapter には get_symbol_master(), search_symbols(keyword), update_master_cache() 等の共通メソッドを用意し、どの国/市場であってもアプリ本体側の呼び出し方は統一する（分岐・条件分けはAdapter側のみで吸収）。
-・取得したシンボル、マスタ情報、検索キーワードは全て “2. 共通データ正規化規則” で定義した関数を通して加工・保存すること。ユーザー入力、生データ、そのまま保存は絶対にしない。
+・銘柄マスタの外部取得は、必ず SymbolAdapter（抽象インターフェース）を介して行う。データソースごとの API をアプリ本体から直接叩かない。
+・SymbolAdapter の共通メソッド例：fetch_symbol_info()（1銘柄の正式情報取得）、search_symbols()（入力したキーワードを元に、外部から複数の候補銘柄を取得）。国/市場が違ってもアプリ本体の呼び出し方は統一し、分岐・条件分けは Adapter 側のみで吸収する。
+・DB への書き込みは Adapter の責務にしない。symbols は SymbolMasterService、search_cache は SearchService が行う。
+・チャート画面で銘柄を選んで表示する流れ：
+  1. ユーザーがキーワードを入力する
+  2. SearchService が search_cache を確認する
+     - ヒットすれば候補を返す → 4へ
+     - なければ 3へ
+  3. SymbolAdapter.search_symbols() で外部から複数の候補銘柄を取得して返す
+  4. ユーザーが候補から銘柄を選んで確定する
+  5. SymbolMasterService で symbols にその銘柄があるか確認する
+     - あれば symbols から銘柄情報を取得する → 10へ
+     - なければ 6へ
+  6. SymbolAdapter.fetch_symbol_info() で正式情報を取得する
+  7. 正式情報をもとに、銘柄情報および検索用語（コード・正式名・ふりがな・ローマ字など）を正規化する
+  8. SymbolMasterService が symbols に書き込む（upsert）
+  9. SearchService が、その銘柄の正規化済み検索用語を search_cache に upsert する
+     （同一キーは更新、新しい読み方は追加。ユーザーが打った文字列そのものは保存しない）
+  10. 揃った銘柄情報をもとに、日足等を取得・表示してチャートを出す（詳細は日足・snapshot の節）
+・取得した銘柄情報（コード・正式名・ふりがな等）は、保存前に必ず “2. 共通データ正規化規則” の関数で加工する。search_cache に残すのも、その正規化済みの検索用語（コード・正式名・ふりがな・ローマ字など）だけとする。ユーザーが打った文字列・生データのままの保存は絶対にしない。
+
 
 
 
@@ -71,12 +89,13 @@
   - `normalize_name(text: str) -> str`
   - `normalize_furigana(text: str) -> str`
   - `normalize_romaji(text: str) -> str`
-・SearchService および各 SymbolAdapter は、必ずこの共通関数を通してからキャッシュやマスタに保存すること
+・銘柄の正式情報を取得したあと、共通の正規化関数（normalize_symbol 等）で整える。その後、SymbolMasterService が symbols に保存し、SearchService が search_cache に保存する。Adapter は DB に書かない。
+
+
 
 【注意】
-・ユーザー入力の「生の」文字列はsearch_cacheには絶対に保存せず、**必ず共通正規化関数で加工した後の結果のみを search_cache.keyword や symbols 等に保存すること。**
-・すなわち、キャッシュやマスタには「正規化済みデータのみ」を保持し、「入力そのままの文字列」は一切使わない。
-
+・search_cache / symbols に保存してよいのは、外部から得た銘柄情報（コード・正式名・ふりがな等）を共通正規化関数で整えた結果だけとする。
+・ユーザーが検索窓に打った文字列は、生のままでも正規化後でも、search_cache にも symbols にも保存しない（打った語は照合用の一時入力にだけ使う）。
 
 ---
 
@@ -287,18 +306,27 @@ def normalize_romaji(text: str) -> str:
 ※ここがアプリ内部の「共通の形」。計算工場もチャートもこれだけ見る。
 
 
-7-A. 銘柄マスタ（1銘柄1行）
+7-A. 銘柄マスタ（symbols：1銘柄1行）
 -----------------------------------------------------------------
-必須：
-・symbol_id（内部銘柄コード。例: AAPL / 7203.T）
-・country（JP / US）
-・name（銘柄名）
-・data_source（いま主に使っている取得元。例: yahoo_jp / yahoo_us / eodhd）
+【テーブル定義：symbols】
 
-あると良い（取れる範囲で）：
-・exchange（取引所）
-・currency（通貨）
-・（将来）isin など
+| カラム名      | 型   | 必須 | 説明・補足 |
+|---------------|------|------|------------|
+| symbol_id     | TEXT | はい | 内部銘柄コード（7203.T / AAPL） |
+| country       | TEXT | はい | JP / US |
+| name          | TEXT | はい | 銘柄名 |
+| data_source   | TEXT | はい | 主に使っている取得元（yahoo_jp / yahoo_us / eodhd / jquants など） |
+| exchange      | TEXT | いいえ | 取引所（取れる範囲で） |
+| is_active     | INTEGER | はい | 1=有効、0=上場廃止等で無効。初期値 1 |
+| delisted_at   | TEXT | いいえ | 上場廃止を検知した日（YYYY-MM-DD）。取れなければ null |
+| updated_at    | TEXT | いいえ | マスタ情報を最後に更新した日時 |
+
+【主キー】
+・symbol_id
+
+【upsertルール】
+・symbol_id が同じ行が来たら上書き更新する
+・is_active / delisted_at を含む正式情報は、SymbolAdapter.fetch_symbol_info() で取得し、共通の正規化関数で整えたうえで、SymbolMasterService.upsert_symbol() が symbols に書き込む
 
 ※ソース固有の巨大なファンダ情報は、初期では取らない／保存しない
 
@@ -473,14 +501,36 @@ def get_us_adapter():
 【SymbolAdapter がやること】
   1. ソースから銘柄マスタ情報を取る
   2. 銘柄コードを内部形式へ直す
-  3. 共通の銘柄マスタ形に直す
+  3. 共通の銘柄マスタ形に直す（is_active / delisted_at を含める）
   4. キーワード検索（search_symbols）を提供する
   5. 共通形の dict / list として返す
+  6. 上場廃止を検知できる場合は、その結果を戻り値に載せる（DBへの書き込みはしない）
 
 
 【共通メソッド名（SymbolAdapter・必須）】
 ・fetch_symbol_info(symbol_id) → 1銘柄のマスタ情報を返す
+  （戻りに is_active / delisted_at を含める。廃止の判断ロジックは各 Adapter 内）
 ・search_symbols(query: str) → キーワードに一致する候補リストを返す
+
+
+【上場廃止フラグの書き込み】
+・SymbolAdapter は検知して返すだけ。symbols テーブルへの upsert は SymbolMasterService の責務とする
+・日足取得前：symbols.is_active = 0 の銘柄は取得対象から外す（日足バッチ側の責務。サービス名は別途定義）
+
+【SymbolMasterService】
+・symbols テーブルの読み書きを担当する
+・SymbolAdapter は取得・返すだけ。DB には書かない
+・SearchService は search_cache 専任。symbols は触らない
+・必須メソッド：
+  - get_symbol(symbol_id) → ローカルの symbols から1件取得。無ければ null
+    （チャート手順の「5. symbols にあるか確認」で使う）
+  - upsert_symbol(info) → 正規化済みの正式銘柄情報を symbols に追加または上書き
+    （is_active / delisted_at を含む。チャート手順の「8. symbols に書き込む」で使う）
+・呼び出しの位置：
+  1. ユーザーが銘柄を確定したあと、まず get_symbol(symbol_id)
+  2. 無ければ fetch_symbol_info → 正規化 → upsert_symbol(info)
+  3. 続けて SearchService.upsert_search_terms(...) で search_cache を更新（手順は「1. 全体方針」に同じ）
+
 
 
 【SymbolAdapter の解決方法（Factory）】
@@ -512,19 +562,14 @@ def get_us_symbol_adapter():
 ・EodhdSymbolAdapter（個人契約／商用ライセンス共用）
 ・JquantsSymbolAdapter（骨格は他と同様。詳細実装は後回し可）
 
-
 【search_cache との役割分担】
-・SymbolAdapter は「外部から候補を取ってくるだけ」に専念する
-・search_cache テーブルへの読み書きは SearchService（上位の検索ロジック）が担当する
+・SymbolAdapter は外部からデータを取って返すだけに専念する（DBには書かない）
+・search_cache の読み書きは SearchService が担当する
+・symbols の読み書きは SymbolMasterService が担当する
+・search_symbols() の直後には search_cache へ保存しない。search_cache への保存は、銘柄確定後に正式情報から作った正規化済み検索用語を upsert するときだけ（手順の詳細は「1. 全体方針」のチャート画面の流れに従う）
 
-流れ：
-  1. ユーザーが検索窓にキーワードを入力
-  2. SearchService がまずローカルの search_cache を確認
-  3. キャッシュにあればそれを返す
-  4. なければ該当する SymbolAdapter の search_symbols() を呼ぶ
-  5. 取得結果を search_cache に保存してから返す
+この分離により、Adapter の責務が明確になり、キャッシュ戦略を後から変更しやすくなる。
 
-この分離により、Adapterの責務が明確になり、キャッシュ戦略を後から変更しやすくなる。
 
 
 【設計の利点】
@@ -587,91 +632,83 @@ CREATE INDEX idx_search_cache_last_searched_at ON search_cache(last_searched_at)
 
 #### SearchService の役割と処理フロー
 
-SearchService は「検索の窓口」として、以下の責務を持ちます：
+SearchService の責務：
+- search_cache の読み書き
+- 検索時に SymbolAdapter.search_symbols() を呼ぶ（必要なとき）
+- 銘柄確定後に、正規化済み検索用語を search_cache へ upsert する
 
-- search_cache の読み書きを一元管理
-- SymbolAdapter への問い合わせを制御
-- 検索結果の正規化・ランキング（**正規化は必ず「2. 共通データ正規化規則」の関数を使う**）
+※ symbols への保存は SymbolMasterService の責務。手順の全体は「1. 全体方針」のチャート画面の流れに従う。
 
-**基本的な検索フロー（SearchService.search(query)）**:
+**A. 候補を探す（SearchService.search(query)）**
+1. ユーザー入力 query を共通正規化関数で整える（照合用。この値は DB に保存しない）
+2. search_cache から keyword が前方一致するレコードを探す
+   - ヒットしたら search_count を +1、last_searched_at を更新する
+   - match_score と search_count でソートして候補として返す
+3. ヒットしない（または結果が少ない）場合：
+   - 現在のデータソース設定に応じて、適切な SymbolAdapter を選ぶ（JP / US）
+   - SymbolAdapter.search_symbols(query) で外部から候補を取得する（生の query を渡す）
+   - 候補リストを返す（この時点では search_cache に保存しない）
 
-1. ユーザー入力 `query` を共通正規化関数で処理する
-2. `search_cache` から `keyword` が前方一致するレコードを検索
-   - ヒットしたら `search_count` を +1、`last_searched_at` を更新
-   - 結果を `match_score` + `search_count` でソートして返す
-3. ヒットしない、または結果が少ない場合：
-   - 現在のデータソース設定に応じて適切な SymbolAdapter を取得
-   - Adapter の `search_symbols(query)` を呼ぶ（生のqueryを渡す）
-   - 返ってきた候補を、共通正規化関数（`normalize_symbol` / `normalize_name` / `normalize_furigana` / `normalize_romaji`）で整える
-   - 整えた keyword を `search_cache` に UPSERT する
-4. キャッシュした結果を再度検索して返却
+**B. 検索用語を保存（銘柄確定後・SearchService.upsert_search_terms(...)）**
+1. 呼び出し元で、正式情報の取得と正規化（コード・正式名・ふりがな・ローマ字など）が終わったあとに呼ぶ
+2. その正規化済み検索用語を search_cache に upsert する
+   （同一キーは更新、新しい読み方は追加。ユーザー入力文字列は保存しない）
 
-**擬似コード例**:
+**擬似コード例：**
 
 ```python
 def search(self, query: str):
-    # 1. ユーザー入力を共通正規化関数で処理
-    candidates = [
+    # 照合用にだけ正規化（DBには保存しない）
+    norms = [
         normalize_symbol(query),
         normalize_name(query),
         normalize_romaji(query),
         normalize_furigana(query),
     ]
-    candidates = [c for c in candidates if c]  # 空文字を除去
-    
-    # 2. キャッシュから検索
+    norms = [n for n in norms if n]
+
     cached = []
-    for norm in candidates:
-        cached += self.db.search_cache.find_by_keyword_prefix(norm)
-    
+    for n in norms:
+        cached += self.db.search_cache.find_by_keyword_prefix(n)
+
     if cached:
         self._increment_search_count(cached)
+        # match_score + search_count で並べて返す
         return self._rank_and_dedup(cached)
-    
-    # 3. キャッシュにない場合 → Adapter に問い合わせ
+
+    # cache に無い（または不足）→ 設定に応じた Adapter で候補取得（保存はしない）
     results = []
     if self.is_jp_mode or self.search_both:
-        adapter = get_jp_symbol_adapter()
-        results += adapter.search_symbols(query)   # 生のqueryを渡す
-    
+        results += get_jp_symbol_adapter().search_symbols(query)
     if self.is_us_mode or self.search_both:
-        adapter = get_us_symbol_adapter()
-        results += adapter.search_symbols(query)
-    
-    # 4. 結果を共通正規化関数で整えてから search_cache に保存
-    for item in results:
-        norm_symbol = normalize_symbol(item.symbol_id)
-        norm_name   = normalize_name(item.name)
-        norm_furi   = normalize_furigana(item.furigana) if getattr(item, "furigana", None) else None
-        norm_romaji = normalize_romaji(item.name)
-        
-        keywords_to_save = [
-            (norm_symbol, "symbol"),
-            (norm_name, "name"),
-        ]
-        if norm_furi:
-            keywords_to_save.append((norm_furi, "furigana"))
-        if norm_romaji:
-            keywords_to_save.append((norm_romaji, "romaji"))
-        
-        for kw, mtype in keywords_to_save:
-            if not kw:
-                continue
-            self.db.search_cache.upsert({
-                "keyword": kw,
-                "symbol_id": norm_symbol,
-                "display_name": item.name,          # 表示用は元の名前を残す
-                "furigana": getattr(item, "furigana", None),
-                "match_type": mtype,
-                "source": item.source,
-                "created_at": now()
-            })
-    
-    # 5. 再度キャッシュから取得して返却
-    cached = []
-    for norm in candidates:
-        cached += self.db.search_cache.find_by_keyword_prefix(norm)
-    return self._rank_and_dedup(cached)
+        results += get_us_symbol_adapter().search_symbols(query)
+    return results
+
+
+def upsert_search_terms(self, info):
+    # info は、呼び出し元で正規化済みの正式銘柄情報
+    # ここでは検索用語を「作らず」、渡された正規化済み値を search_cache に書くだけ
+    keywords_to_save = [
+        (info.symbol_id, "symbol"),
+        (info.name, "name"),
+    ]
+    if info.furigana:
+        keywords_to_save.append((info.furigana, "furigana"))
+    if info.romaji:
+        keywords_to_save.append((info.romaji, "romaji"))
+
+    for kw, mtype in keywords_to_save:
+        if not kw:
+            continue
+        self.db.search_cache.upsert({
+            "keyword": kw,
+            "symbol_id": info.symbol_id,
+            "display_name": info.display_name,
+            "furigana": info.furigana,
+            "match_type": mtype,
+            "source": info.source,
+            "created_at": now(),
+        })
 ```
 
 #### 設計のポイント
@@ -679,14 +716,13 @@ def search(self, query: str):
 - **symbols テーブルとは分離**している理由  
   symbols は「公式情報」の保存場所。search_cache は「検索体験を良くするためのインデックス兼キャッシュ」。
 - search_cache には「正規化された検索対象語」を保存する（ユーザの生入力は入れない）
+- search_symbols() の直後には search_cache へ保存しない（保存は銘柄確定・正規化のあと）
 - US株も積極的にキャッシュする（「tes → Tesla」のような予測表示のため）
 - 同じ `keyword + symbol_id + match_type` の組み合わせは重複させない（UNIQUE制約）
 - 将来的に「ローマ字検索」「あいまい検索」などを追加しやすい構造
 - 古いキャッシュの掃除は `last_searched_at` を見て定期的に行う（任意）
 
 この設計にすることで、**JP株もUS株も同じ検索UIでサクサク動く**ようになります。
-```
-
 
 
 
