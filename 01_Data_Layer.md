@@ -248,21 +248,20 @@ def normalize_romaji(text: str) -> str:
 
 
 -----------------------------------------------------------------
-5. 終値の扱い（計算の正）
+5. 終値・調整済み価格の扱い（計算の正）
 -----------------------------------------------------------------
 【決定】
-・チャート表示・移動平均・スクリーニング等の計算の正は「調整後終値」とする
-  （株式分割後も証券アプリのようにチャートがつながって見えることを優先）
+・チャートのデフォルト表示は調整済み OHLC（adj_open / adj_high / adj_low / adj_close）
+・移動平均・スクリーニング等の計算の正は adj_close
+・ユーザーが「生データで見る」に切り替えたときだけ、素の open / high / low / close を使う
+・株式分割後もチャートがつながって見えることを優先する（証券アプリと同方向）
 
 【保存】
-・取れるソースでは次を両方保存する
-  - close … その日の素の終値（実価格）
-  - adj_close … 調整後終値（分割・配当などをならしたもの）
-・計算工場へ渡す主価格は adj_close
-・素の close は「その日の実価格が後で欲しくなったとき用」。カラム1本増えるだけなので容量影響は小さい
+・daily_bars には素の OHLC＋volume と、adj_close（必須）、adj_open / adj_high / adj_low（取れる／埋められる場合）を持つ
+・カラム定義・埋め方の式は 7-B. daily_bars を正とする
 
-【ソースによって片方しか無い場合】
-・ある方を両方にコピーする、などAdapter側で吸収ルールを決める（詳細は後続で詰める）
+【ソース差分】
+・調整済みの取り方はソースごとに違う。吸収は各価格 Adapter 内で行う（7-B の埋め方に従う）
 
 
 -----------------------------------------------------------------
@@ -331,17 +330,46 @@ def normalize_romaji(text: str) -> str:
 ※ソース固有の巨大なファンダ情報は、初期では取らない／保存しない
 
 
-7-B. 日足（1銘柄×1営業日で1行）
+7-B. 日足（daily_bars：1銘柄×1営業日で1行）
 -----------------------------------------------------------------
-必須：
-・symbol_id
-・trade_date（日付）
-・open / high / low
-・close（素の終値。取れる場合）
-・adj_close（調整後終値。計算の正）
-・volume
-・source（この行をどのソースから入れたか）
-・ingested_at（取り込んだ日時。任意だがあるとデバッグしやすい）
+【テーブル定義：daily_bars】
+
+| カラム名     | 型      | 必須 | 説明・補足 |
+|--------------|---------|------|------------|
+| symbol_id    | TEXT    | はい | 内部銘柄コード（7203.T / AAPL） |
+| trade_date   | TEXT    | はい | 取引日（YYYY-MM-DD） |
+| open         | REAL    | はい | 素の始値 |
+| high         | REAL    | はい | 素の高値 |
+| low          | REAL    | はい | 素の安値 |
+| close        | REAL    | はい | 素の終値 |
+| volume       | REAL    | はい | 出来高 |
+| adj_open     | REAL    | いいえ | 調整後始値（取れる／比率で埋められる場合） |
+| adj_high     | REAL    | いいえ | 調整後高値 |
+| adj_low      | REAL    | いいえ | 調整後安値 |
+| adj_close    | REAL    | はい | 調整後終値（計算の正） |
+| source       | TEXT    | はい | 取得元（yahoo_jp / yahoo_us / eodhd など） |
+| ingested_at  | TEXT    | いいえ | この行を取り込んだ／更新した日時 |
+
+【主キー】
+・(symbol_id, trade_date)
+
+【upsertルール】
+・同じ (symbol_id, trade_date) が来たら上書き更新する
+・確定日足のみ入れる（未確定の当日足は latest_snapshots 側）
+
+【表示・計算の正（概要）】
+・チャートのデフォルトは調整済み OHLC（adj_*）
+・指標計算の正は adj_close
+・ユーザーが生データ表示に切り替えたときだけ open/high/low/close を使う
+・adj_open / adj_high / adj_low の埋め方（価格 Adapter 内）：
+  - ソースから調整済み OHLC が全部取れる場合は、そのまま adj_* に入れる
+  - adj_close だけ取れる場合は、次の式で埋める
+    ratio = adj_close / close
+    adj_open = open × ratio
+    adj_high = high × ratio
+    adj_low  = low × ratio
+  - close が 0 のときは埋めず、adj_open / adj_high / adj_low は null とする
+
 
 持たない（初期）：
 ・週足・月足の複製
