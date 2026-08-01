@@ -39,7 +39,8 @@
 ・銘柄マスタ（シンボル一覧や属性情報、検索用キーワードなど）の取得・検索処理についても、同様に抽象化する。直接データソースごとのAPIやテーブルへアクセスする実装は必ず避ける。  
 ・銘柄マスタの外部取得は、必ず SymbolAdapter（抽象インターフェース）を介して行う。データソースごとの API をアプリ本体から直接叩かない。
 ・SymbolAdapter の共通メソッド例：fetch_symbol_info()（1銘柄の正式情報取得）、search_symbols()（入力したキーワードを元に、外部から複数の候補銘柄を取得）。国/市場が違ってもアプリ本体の呼び出し方は統一し、分岐・条件分けは Adapter 側のみで吸収する。
-・DB への書き込みは Adapter の責務にしない。symbols は SymbolMasterService、search_cache は SearchService が行う。
+・DB への書き込みは Adapter の責務にしない。symbols は SymbolMasterService、search_cache は SearchService、daily_bars / latest_snapshots は DailyBarService が行う。
+
 ・チャート画面で銘柄を選んで表示する流れ：
   1. ユーザーがキーワードを入力する
   2. SearchService が search_cache を確認する
@@ -55,7 +56,8 @@
   8. SymbolMasterService が symbols に書き込む（upsert）
   9. SearchService が、その銘柄の正規化済み検索用語を search_cache に upsert する
      （同一キーは更新、新しい読み方は追加。ユーザーが打った文字列そのものは保存しない）
-  10. 揃った銘柄情報をもとに、日足等を取得・表示してチャートを出す（詳細は日足・snapshot の節）
+  10. DailyBarService で日足等を取得・保存し、チャートを表示する（詳細は【DailyBarService】）
+
 ・取得した銘柄情報（コード・正式名・ふりがな等）は、保存前に必ず “2. 共通データ正規化規則” の関数で加工する。search_cache に残すのも、その正規化済みの検索用語（コード・正式名・ふりがな・ローマ字など）だけとする。ユーザーが打った文字列・生データのままの保存は絶対にしない。
 
 
@@ -320,6 +322,7 @@ def normalize_romaji(text: str) -> str:
 | delisted_at   | TEXT | いいえ | 上場廃止を検知した日（YYYY-MM-DD）。取れなければ null |
 | updated_at    | TEXT | いいえ | マスタ情報を最後に更新した日時 |
 
+
 【主キー】
 ・symbol_id
 
@@ -328,6 +331,25 @@ def normalize_romaji(text: str) -> str:
 ・is_active / delisted_at を含む正式情報は、SymbolAdapter.fetch_symbol_info() で取得し、共通の正規化関数で整えたうえで、SymbolMasterService.upsert_symbol() が symbols に書き込む
 
 ※ソース固有の巨大なファンダ情報は、初期では取らない／保存しない
+
+
+7-A-2. 閲覧時刻（symbol_last_viewed：1銘柄1行）
+-----------------------------------------------------------------
+【テーブル定義：symbol_last_viewed】
+・個別チャート表示時の最終閲覧時刻。symbols 本体には置かない（マスタを頻繁に書き換えないため）
+・読み書きは SymbolMasterService.touch_last_viewed / cleanup_stale_viewed_symbols が担当する
+・掃除方針の詳細は【一時閲覧銘柄（監視外）】
+
+| カラム名       | 型   | 必須 | 説明・補足 |
+|----------------|------|------|------------|
+| symbol_id      | TEXT | はい | 内部銘柄コード（symbols.symbol_id と対応） |
+| last_viewed_at | TEXT | はい | 個別チャート等で最後に表示した日時 |
+
+【主キー】
+・symbol_id
+
+【upsertルール】
+・同じ symbol_id が来たら last_viewed_at を上書き更新する
 
 
 7-B. 日足（daily_bars：1銘柄×1営業日で1行）
@@ -515,6 +537,94 @@ def get_us_adapter():
 ・EodhdAdapter … 同上（個人契約／商用ライセンスで共用。__init__ で api_key と mode を受け取る）
 ・JquantsAdapter … fetch_daily_bars + fetch_snapshot 実装（中身の詳細は優先度低めで後から埋めても可。骨格は他と揃える）
 
+【DailyBarService】
+・daily_bars / latest_snapshots の取得〜保存を担当する上位サービス
+・価格 Adapter は取って・変換して・共通形で返すだけ。DB には書かない
+・Yahoo / EODHD / Jクオンツの違いは Adapter 内に閉じる
+・DailyBarService は Factory で価格 Adapter を1つ取得したうえで、
+  adapter.fetch_daily_bars(...) / adapter.fetch_snapshot(...) だけを呼ぶ
+  （変数名は adapter でよい。jp/us の違いは Factory で吸収済み）
+
+・必須メソッド：
+  - update_daily_bars(symbol_id, ...) → 1銘柄の確定日足を取得して daily_bars に upsert
+  - update_daily_bars_for_watchlist(...) → 監視銘柄一覧を順に更新
+  - update_snapshot(symbol_id) → 1銘柄の気配値を取得して latest_snapshots に upsert
+  - update_snapshots_for_watchlist(...) → 監視銘柄一覧の気配値を順に更新
+
+Ⅰ. 日足更新（update_daily_bars / update_daily_bars_for_watchlist）
+〈対象〉
+・update_daily_bars_for_watchlist(...) … 監視銘柄一覧
+・update_daily_bars(symbol_id, ...) … 指定1銘柄（個別チャート等。監視外も含みうる）
+
+〈判定（スキップ）〉
+・SymbolMasterService.get_symbol(symbol_id) で確認する
+・is_active = 0 なら取得せず終了
+・daily_bars の最新 trade_date と、想定される最新の確定営業日を比べる
+  - 揃っていればスキップ（取りに行かない）
+  - 足りなければ不足分だけ取得する
+・何日もアプリを開いていなかった場合も、この日付差分で不足日を埋める
+
+〈update_daily_bars_for_watchlist〉
+・監視銘柄を1件ずつ取り出し、各銘柄について update_daily_bars(symbol_id) と同じ処理を行う
+
+〈update_daily_bars の取得〜保存〉
+  1. get_jp_adapter() / get_us_adapter() で価格 Adapter を取得する
+  2. adapter.fetch_daily_bars(symbol_id, ...) を呼ぶ
+     （ソース固有の取得・共通形への変換・adj_* 穴埋めは Adapter 内。出口は 7-B の行形）
+  3. 返ってきた行を daily_bars に upsert する
+     （主キー (symbol_id, trade_date)。確定足のみ）
+
+Ⅱ. 気配値更新（update_snapshot / update_snapshots_for_watchlist）
+〈対象〉
+・update_snapshots_for_watchlist(...) … 監視銘柄一覧
+・update_snapshot(symbol_id) … 指定1銘柄（個別チャート等。監視外も含みうる）
+
+〈時間枠〉
+・例：9:10〜9:59、10:00〜10:59 … のように枠を決める
+・同一銘柄は、同じ枠の中では気配値取得を1回までとする
+
+〈判定（スキップ）〉
+・latest_snapshots の updated_at を見る
+  - いまの時間枠内に更新済みならスキップ
+  - 枠内に未更新なら取得する
+
+〈update_snapshots_for_watchlist〉
+・監視銘柄を1件ずつ取り出し、各銘柄について update_snapshot(symbol_id) と同じ処理を行う
+
+〈update_snapshot の取得〜保存〉
+  1. 価格 Adapter を取得する
+  2. adapter.fetch_snapshot(symbol_id) を呼ぶ
+  3. latest_snapshots に upsert する（updated_at も更新）
+
+〈補足〉
+・更新のきっかけはユーザ操作（アプリ起動、プレイリスト表示、デッキ表示など）を基本とする
+・スキップ判定がある前提なので、起動時に監視銘柄を一通り判定しても、未取得分以外は fetch しない
+・定時の強制一括取得は作らない（不足は、次にアプリを開いたときの日付／時間枠判定で埋める）
+
+・Adapter 一覧の「fetch_daily_bars + fetch_snapshot 実装」は、各 Adapter が同名メソッドを自分の中に持つという意味
+
+【一時閲覧銘柄（監視外）】
+・個別チャートなどで「ちょっと見るだけ」の銘柄も、正規の symbols / daily_bars / latest_snapshots に保存する
+  （一時用の別テーブルは作らない。価格・マスタは正規テーブル共用）
+・日足一括更新の対象かどうかは user_watchlist の有無で決める（00_Master_Design 3-E と同じ）
+・閲覧時刻 last_viewed_at は symbols には置かない（マスタを頻繁に書き換えないため）
+  ・小さな表 symbol_last_viewed（symbol_id, last_viewed_at）に持つ
+・個別チャート表示時：SymbolMasterService.touch_last_viewed(symbol_id) で symbol_last_viewed を更新する
+  （監視銘柄でも一時閲覧でも同じ）
+・「監視に登録」（個別チャートのボタン）：user_watchlist に追加する（未登録なら）
+  ・playlist_symbols には追加しない
+  ・以降は起動時の一括更新（update_*_for_watchlist）の対象になる
+・上場廃止の is_active とは無関係（一時閲覧の判定には使わない）
+
+〈掃除〉
+・SymbolMasterService.cleanup_stale_viewed_symbols()
+・呼び出し：アプリ起動時に1回だけ
+・削除条件：
+  - user_watchlist に入っていない
+  - かつ symbol_last_viewed.last_viewed_at が基準日数より古い（例：30日。日数は設定で変えてよい）
+・削除する内容：当該 symbol_id の symbols / daily_bars / latest_snapshots / symbol_last_viewed
+  （search_cache は残してよい）
+
 
 -----------------------------------------------------------------
 8-B. 銘柄マスタ・検索用 SymbolAdapter
@@ -543,17 +653,24 @@ def get_us_adapter():
 
 【上場廃止フラグの書き込み】
 ・SymbolAdapter は検知して返すだけ。symbols テーブルへの upsert は SymbolMasterService の責務とする
-・日足取得前：symbols.is_active = 0 の銘柄は取得対象から外す（日足バッチ側の責務。サービス名は別途定義）
+・日足取得前：symbols.is_active = 0 の銘柄は取得対象から外す（DailyBarService の責務）
 
 【SymbolMasterService】
 ・symbols テーブルの読み書きを担当する
 ・SymbolAdapter は取得・返すだけ。DB には書かない
 ・SearchService は search_cache 専任。symbols は触らない
+
+
+
 ・必須メソッド：
   - get_symbol(symbol_id) → ローカルの symbols から1件取得。無ければ null
     （チャート手順の「5. symbols にあるか確認」で使う）
   - upsert_symbol(info) → 正規化済みの正式銘柄情報を symbols に追加または上書き
     （is_active / delisted_at を含む。チャート手順の「8. symbols に書き込む」で使う）
+  - touch_last_viewed(symbol_id) → symbol_last_viewed.last_viewed_at を今の時刻に更新（個別チャート表示時）
+  - cleanup_stale_viewed_symbols() → user_watchlist に無く、last_viewed_at が古い銘柄を削除（アプリ起動時）
+
+
 ・呼び出しの位置：
   1. ユーザーが銘柄を確定したあと、まず get_symbol(symbol_id)
   2. 無ければ fetch_symbol_info → 正規化 → upsert_symbol(info)
