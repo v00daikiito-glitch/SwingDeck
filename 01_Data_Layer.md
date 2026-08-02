@@ -41,7 +41,7 @@
 ・SymbolAdapter の共通メソッド例：fetch_symbol_info()（1銘柄の正式情報取得）、search_symbols()（入力したキーワードを元に、外部から複数の候補銘柄を取得）。国/市場が違ってもアプリ本体の呼び出し方は統一し、分岐・条件分けは Adapter 側のみで吸収する。
 ・DB への書き込みは Adapter の責務にしない。symbols は SymbolMasterService、search_cache は SearchService、daily_bars / latest_snapshots は DailyBarService が行う。
 
-・チャート画面で銘柄を選んで表示する流れ：
+【チャート画面：銘柄選択〜表示の流れ】
   1. ユーザーがキーワードを入力する
   2. SearchService が search_cache を確認する
      - ヒットすれば候補を返す → 4へ
@@ -600,6 +600,19 @@ def get_us_adapter():
 ・更新のきっかけはユーザ操作（アプリ起動、プレイリスト表示、デッキ表示など）を基本とする
 ・スキップ判定がある前提なので、起動時に監視銘柄を一通り判定しても、未取得分以外は fetch しない
 ・定時の強制一括取得は作らない（不足は、次にアプリを開いたときの日付／時間枠判定で埋める）
+
+〈UIトリガー（概要。画面詳細は各UI設計書）〉
+| きっかけ | 対象 | 呼び出す処理 |
+|----------|------|----------------|
+| アプリ起動 | user_watchlist 全体 | 1. update_daily_bars_for_watchlist  2. update_snapshots_for_watchlist  3. cleanup_stale_viewed_symbols（起動時のみ） |
+| プレイリスト表示／切替 | user_watchlist 全体 | 1. update_daily_bars_for_watchlist  2. update_snapshots_for_watchlist |
+| デッキ表示 | user_watchlist 全体 | 1. update_daily_bars_for_watchlist  2. update_snapshots_for_watchlist  3. その後 indicators 計算→分割表示（計算結果の永続キャッシュは当面しない） |
+| 個別チャート表示 | その1銘柄（監視外可） | 1. update_daily_bars(symbol_id)  2. update_snapshot(symbol_id)  3. touch_last_viewed(symbol_id) |
+
+・いずれもスキップ判定前提（揃っている銘柄は fetch しない）
+・定時の強制一括取得は作らない
+
+
 
 ・Adapter 一覧の「fetch_daily_bars + fetch_snapshot 実装」は、各 Adapter が同名メソッドを自分の中に持つという意味
 
