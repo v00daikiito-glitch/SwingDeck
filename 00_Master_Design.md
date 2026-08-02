@@ -242,10 +242,10 @@ calculate_all(
 〈仕様定義：ON/OFFフラグによる直感的な条件テスター〉
 複雑な数式（例: `(A AND B) OR C`）を組んだ際、ユーザーが特定のエレメントだけを一時的に無効化してチャートの網掛け（水色シグナル）の変化を確認できるよう、各ルール配列内に `"is_active": true/false` のトグルスイッチを必ず保持する。Python側は `is_active=false` の要素を無視して計算を行う。
 
-■ テーブル②a：user_metrics（指標インスタンス・比較なし）
+■ テーブル：user_metrics（指標インスタンス・比較なし）
 （比較なしの計算定義。主用途はプレイリスト列の表示と、列ごとの抽出チップ。比較演算子は持たない）
 
-  - id (型: INTEGER) / 主キー・自動連番（metric_id）
+  - id (型: INTEGER) / 主キー・自動連番。他から指すときは metric_id と呼ぶ（同じ番号）
   - user_id (型: TEXT) / ユーザー識別ID
   - name (型: TEXT) / 任意。表示用（例: "7日変化率"）。空でも可
   - metric_json (型: TEXT) / 指標インスタンスJSON
@@ -256,8 +256,7 @@ calculate_all(
 
 ※ kind は IndicatorCatalog（後述・コード定数。DBテーブルにしない）のキーと一致させる。
 ※ 列削除時：その metric_id を参照する列・列用抽出チップがゼロなら user_metrics からも削除。他で参照中なら残す。
-※比較なしの指標インスタンスはフィルター層ではない。エレメント／完成品の2層とは別物。
-
+※ user_metrics は比較なしの計算定義。フィルター（エレメント／完成品）ではない。
 
 ■ テーブル②：user_filters
 （フィルター工房で作成された「エレメント」と「条件（完成品）」のマスターデータ）
@@ -352,11 +351,12 @@ calculate_all(
 〈仕様定義〉
 ・「どの指標を表示するか（列の定義・数は動的に増減可能）」および「抽出フィルター（オレンジ）」はアプリ全体（場）の共通設定とし、ユーザーの認知負荷を下げる（プレイリストを切り替えても維持される）。
 ・「現在のソート状態（どの指標で昇順/降順にしているか）」および「最後に開いていたプレイリスト」もアプリ全体のグローバル状態として保持する。これにより、個別チャートや管理画面を経由してマルチデッキに戻った際も、完全に直前の状態を復元できる。
-・ソート基準は「スロットの位置」ではなく「指標名」と「足(timeframe)」で直接指定し、列の入れ替えによってソートが壊れるのを防ぐ。
-・ユーザーによる手動並び替え（ドラッグ＆ドロップ）機能はコンセプト外のため完全廃止し、データでバシッとソートする実践的ツールとする。
+・ソート基準は「スロットの位置」ではなく **column_id** で指定し、列の入れ替えによってソートが壊れるのを防ぐ。
+・銘柄の手動並び替え（ドラッグ＆ドロップ）はコンセプト外のため廃止し、データソートを正とする。列の左右順（slot）の入れ替えは可。
 
-※指標名と関数のマッピング対応関係表（Cursorへの絶対連携指示）：
-JSON内の "indicator_name" で指定される文字列は、必ず以下のPython関数にマッピングし、数値を算出すること。勝手な関数名を作成してはならない。本設計書で定義されたすべての関数が漏れなく網羅されていること。
+※IndicatorCatalog（種類カタログ・コード定数。DBテーブルにしない）：
+アプリが用意するメニュー／入力枠／Python関数の対応。ユーザー操作では増減しない。3-F の入力枠辞書と一体。
+JSON の kind（旧 indicator_name）は、必ず以下の Python 関数にマッピングすること。勝手な関数名を作ってはならない。本設計書で定義されたすべての関数が漏れなく網羅されていること。
   - "change_rate" ────────> function calculate_change_rate()
   - "high_low_bounds" ────> function calculate_high_low_bounds()
   - "MA" ─────────────────> function calculate_ma()
@@ -373,35 +373,39 @@ JSON内の "indicator_name" で指定される文字列は、必ず以下のPyth
   - "Bollinger_Bandwidth" ─> function calculate_bollinger_bandwidth()
 
 
-■ テーブル⑤：app_ui_settings（新設：アプリ全体共通のUI状態）
+■ テーブル⑤：app_ui_settings（アプリ全体共通のUI状態）
 （すべてのプレイリストで共通する列設定、抽出フィルター、最新のソート・選択状態を保持）
 
   - id (型: INTEGER) / 主キー・自動連番
   - user_id (型: TEXT) / ユーザー識別ID
   - last_playlist_id (型: INTEGER) / 最後に選択していた playlists の id
-  - preset_filter_id (型: INTEGER) / NULL許可。現在の場（全体）に適用している【抽出フィルター（オレンジ）】の user_filters の id。プレイリストを切り替えても維持される。
-  - columns_json (型: TEXT) / 複数列（スロット）の設定JSONダンプ
-  - sort_rule_json (型: TEXT) / 現在アクティブな並び替えルールのJSONダンプ（指標を直接指定）
+  - preset_filter_id (型: INTEGER) / NULL許可。場にかけているオレンジ用 user_filters.id（element または condition）。プレイリスト切替でも維持
+  - columns_json (型: TEXT) / 列の定義・左右順・参照する metric・現在のソート状態
+※ columns_json 内の metric_id は、user_metrics の id を指す（外部キー）。
+※ 欄名は metric_id、値は user_metrics.id と同じ番号。
 
 ▼ columns_json の保存データ例
 {
   "columns": [
-    {"slot": 1, "type": "change_rate"},                                                                              // スロット1: 変化率（前日比）
-    {"slot": 2, "type": "indicator", "indicator_name": "RSI", "params": {"timeframe": "daily", "period": 14}},       // スロット2: 日足のRSI(14)
-    {"slot": 3, "type": "indicator", "indicator_name": "Deviation", "params": {"timeframe": "daily", "target_type": "SMA", "period": 25}}, // スロット3: 日足25日線乖離率
-    {"slot": 4, "type": "indicator", "indicator_name": "RSI", "params": {"timeframe": "weekly", "period": 14}}       // スロット4: 週足のRSI(14)など、ユーザーが自由に列を追加可能
-  ]
-}
-
-▼ sort_rule_json の保存データ例（※列の順序が変わっても壊れない絶対指定）
-{
+    // column_id … この列の不変ID（左右を入れ替えても変わらない。ソート指定に使う）
+    // slot … 左から何番目か（入れ替えたら付け替える）
+    // metric_id … user_metrics.id。計算の中身はそちら。例: 101 = 7日変化率
+    {"column_id": "col_1", "slot": 1, "metric_id": 101},  // 例: 7日変化率を1列目に表示
+    {"column_id": "col_2", "slot": 2, "metric_id": 102},  // 例: 日足RSI(14)を2列目に表示
+    {"column_id": "col_3", "slot": 3, "metric_id": 103}   // 例: 日足25MA乖離を3列目に表示
+  ],
+  // いまどの列で昇順/降順ソートしているか（スロット位置ではなく column_id で指定）
   "sort": {
-    "type": "indicator", 
-    "indicator_name": "RSI",  // 例：スロットの位置に関係なく、指定した指標で並び替える
-    "params": {"timeframe": "daily", "period": 14}, // ※必ず足（timeframe）も指定する
-    "order": "asc"            // 昇順 (asc) / 降順 (desc)
+    "column_id": "col_2",  // 上の RSI 列でソート。列を左右入れ替えても同じ列を指す
+    "order": "asc"         // 昇順 (asc) / 降順 (desc)
   }
 }
+※ metric_id が指す user_metrics の1件について、metric_json（計算の中身）の例：
+  id=101 → { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
+  id=102 → { "kind": "RSI", "timeframe": "daily", "params": { "period": 14 } }
+  id=103 → { "kind": "Deviation", "timeframe": "daily", "params": { "target_type": "SMA", "period": 25 } }
+※ 指標の中身は columns_json に埋め込まない（metric_id で参照する）。
+※ 列ごとの抽出チップ（例: ≤3% / ≤5%）は、その列の metric_id を参照し、比較だけ持つ（詳細は後続可）。
 
 
 
