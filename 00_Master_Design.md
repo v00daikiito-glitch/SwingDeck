@@ -267,30 +267,29 @@ calculate_all(
   - filter_name (型: TEXT) / 表示用の名前（例: "RSI<30", "A・転換確認型"）
   - conditions_json (型: TEXT) / このフィルターの中身（式）をJSONで保存する欄
 
-  【1. 指標の指定（左右で使い回す共通形）】
-  次の4キーを1セットとする。left / right の type が "indicator" のときに使う。
+  【1. indicator（指標）の指定（左右で使い回す共通形）】
+  indicator（指標）を表すときの共通形。次の4キーを1セットとする（必須）。
   - kind … 計算の種類。IndicatorCatalog のキーと一致させる（現在値も含む）
   - timeframe … 足。"daily"（日足）/ "weekly"（週足）/ "monthly"（月足）
-  - params … パラメータ（期間など。kind によって中身が変わる）
+    ※現在値でも、日足の終値と週足の終値は別なので timeframe は残す。
+  - params … その kind 固有のパラメータ（期間など）。不要なら空の {} とする
   - lookback … 何本前の確定足を見るか。整数。初期値は 0
 
-  【2. 辺の指定（left / right で同じ形）】
-  left と right は、どちらも次のいずれか一方とする（左右対称）。
-  ・固定数値のとき:
-    - type … 常に "number"
-    - number … 数値
-  ・指標のとき:
-    - type … 常に "indicator"
-    - 続けて【1. 指標の指定】と同じ4キー（kind / timeframe / params / lookback）
+  【2. 辺の指定（left / right で同じ形・左右対称）】
+  left と right は、どちらも次のいずれか一方とする。
+  どちらであるかはキー side_type で示す。値は "number" または "indicator" だけ。
 
-  ※キー type の注意:
-    塊そのものの type（下の【3】）と、left / right の中の type（この【2】）は、別のオブジェクトのキーである。
-    塊の type は "group" / "filter_reference" / "inline_rule"。
-    辺の type は "number" / "indicator"。
+  ・number（固定数値）のとき（必須キー: side_type, value）
+    - side_type … 常に "number"
+    - value … 比べる数値
+
+  ・indicator（指標）のとき（必須キー: side_type ＋【1】の4キー）
+    - side_type … 常に "indicator"
+    - 続けて【1. indicator（指標）の指定】と同じ4キー（kind / timeframe / params / lookback）
 
   【3. 塊の種類】
   conditions_json に保存するデータは、次のいずれか1つの塊から始まる。
-  塊の種類はキー type で示す。
+  塊の種類はキー node_type で示す。値は次の3つだけ。
 
   - "group"
     複数の条件を AND / OR でまとめる括弧。
@@ -302,25 +301,28 @@ calculate_all(
 
   【4. 各塊が持つキー】
 
-  ■ type が "group" のとき
+  ■ node_type が "group" のとき（必須: node_type, logical_operator, rules, is_active）
+  - node_type … 常に "group"
   - logical_operator
     この括弧内の子どうしを、AND または OR のどちらでつなぐか。
     子が複数あっても、指定できる値は "AND" または "OR" のどちらか一つだけ。
   - rules
     この括弧の中に入る子の一覧（配列）。2つ以上とする。
-    子は "group" / "filter_reference" / "inline_rule" のいずれか。
-    より複雑な式は、子に "group" を入れて括弧を入れ子にする。
+    子は group / filter_reference / inline_rule のいずれか。
+    より複雑な式は、子に group を入れて括弧を入れ子にする。
   - is_active
     true ならこの括弧を有効。false なら括弧ごと計算から外す（式からは消さない）。
 
-  ■ type が "filter_reference" のとき
+  ■ node_type が "filter_reference" のとき（必須: node_type, filter_id, is_active）
+  - node_type … 常に "filter_reference"
   - filter_id
     参照する user_filters の id。
     参照してよいのは filter_type が element の行だけ。完成品は参照しない。
   - is_active
     true なら有効。false なら計算から外す（式からは消さない）。
 
-  ■ type が "inline_rule" のとき
+  ■ node_type が "inline_rule" のとき（必須: node_type, left, operator, right, is_active）
+  - node_type … 常に "inline_rule"
   - left … 左辺。【2. 辺の指定】と同じ形。
   - operator … 比較の種類。例: "<", ">", "<=", ">=", "=", "GC", "DC"
   - right … 右辺。【2. 辺の指定】と同じ形。
@@ -328,10 +330,10 @@ calculate_all(
     true なら有効。false なら計算から外す（式からは消さない）。
 
   【5. 保存時にエラーとするもの】
-  ※ left と right がどちらも type "number" のとき（数値どうし）
-  ※ operator が "GC" または "DC" のとき、left / right のどちらか一方でも type "number" のとき
+  ※ left と right がどちらも side_type "number" のとき（数値どうし）
+  ※ operator が "GC" または "DC" のとき、left / right のどちらか一方でも side_type "number" のとき
   ※ group の rules が2つ未満のとき
-  ※ 必須キーが欠けているとき
+  ※ 上記【1】【2】【4】に書いた必須キーが欠けているとき
   これらは保存せず、画面でエラーにする。実行時に黙って無視しない。
 
   【6. filter_type ごとの使い方】
@@ -339,38 +341,38 @@ calculate_all(
     conditions_json には inline_rule を1本だけ入れる。
 
   ※filter_type が condition（完成品）のとき
-    inline_rule を並べて式を作るのが本体である。
+    式の本体は inline_rule である（1本だけでもよい）。
     複数本を AND / OR でつなぐときは group を使う。
     filter_reference でエレメントを式に入れてよい（必須ではない）。
     完成品の中に、別の完成品を入れてはならない。
 
   ※プレイリストに列を追加する操作では、user_filters に行を作らない。
-    列の計算定義は user_metrics に保存する。
-    どの列に出すかは app_ui_settings の columns_json に書く。
+    列に出す計算の中身は user_metrics に保存する。
+    プレイリストの何列目に、どの user_metrics を表示するかは、app_ui_settings の columns_json に書く。
     列ごとの抽出（extract_chips）も columns_json 側であり、user_filters とは別である。
 
   ※フィルター工房でエレメントや完成品を作るとき、user_metrics は作らない。参照もしない。
 
 ▼ conditions_json の保存データ例（完成品。上の定義に対応）
 {
-  "type": "group",
+  "node_type": "group",
   "logical_operator": "AND",
   "is_active": true,
   "rules": [
     {
-      "type": "filter_reference",
+      "node_type": "filter_reference",
       "filter_id": 10,
       "is_active": true
     },
     {
-      "type": "group",
+      "node_type": "group",
       "logical_operator": "OR",
       "is_active": true,
       "rules": [
         {
-          "type": "inline_rule",
+          "node_type": "inline_rule",
           "left": {
-            "type": "indicator",
+            "side_type": "indicator",
             "kind": "MA",
             "timeframe": "daily",
             "params": { "period": 25 },
@@ -378,7 +380,7 @@ calculate_all(
           },
           "operator": ">",
           "right": {
-            "type": "indicator",
+            "side_type": "indicator",
             "kind": "MA",
             "timeframe": "daily",
             "params": { "period": 75 },
@@ -387,9 +389,9 @@ calculate_all(
           "is_active": false
         },
         {
-          "type": "inline_rule",
+          "node_type": "inline_rule",
           "left": {
-            "type": "indicator",
+            "side_type": "indicator",
             "kind": "Price",
             "timeframe": "daily",
             "params": {},
@@ -397,8 +399,8 @@ calculate_all(
           },
           "operator": "<",
           "right": {
-            "type": "number",
-            "number": 1000
+            "side_type": "number",
+            "value": 1000
           },
           "is_active": true
         }
@@ -409,9 +411,9 @@ calculate_all(
 
 ▼ conditions_json の保存データ例（エレメント。比較は1本だけ）
 {
-  "type": "inline_rule",
+  "node_type": "inline_rule",
   "left": {
-    "type": "indicator",
+    "side_type": "indicator",
     "kind": "RSI",
     "timeframe": "daily",
     "params": { "period": 14 },
@@ -419,8 +421,8 @@ calculate_all(
   },
   "operator": "<",
   "right": {
-    "type": "number",
-    "number": 30
+    "side_type": "number",
+    "value": 30
   },
   "is_active": true
 }
