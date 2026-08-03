@@ -236,11 +236,11 @@ calculate_all(
 
 〈仕様定義：2つの適用先（抽出とシグナル）〉
 オレンジ／水色には、`user_filters` のエレメント（element）または完成品（condition）の id をアタッチできる。
-  ① 【抽出フィルター（オレンジ）】：アプリ全体（場）にかかり、プレイリスト内の銘柄を最新の確定足データでふるい落としてリストアップする用途。参照先は `app_ui_settings.preset_filter_id`。
+  ① 【抽出フィルター（オレンジ）】：アプリ全体（場）にかかり、プレイリスト内の各銘柄について最新の確定足データに条件をかけ、合わない銘柄を落としてリストする用途。参照先は `app_ui_settings.preset_filter_id`。
   ② 【シグナル・ハイライト（水色）】：個別銘柄のチャートに対し、過去から未来にかけて条件合致箇所に網掛け（視覚的バックテスト）を行う用途。参照先は `symbol_signals.filter_id`。視覚的ノイズを防ぐため「1銘柄にセットできるシグナルは常に1つまで（後勝ち上書き）」とする。
 
 〈仕様定義：ON/OFFフラグによる直感的な条件テスター〉
-複雑な数式（例: `(A AND B) OR C`）を組んだ際、ユーザーが特定のエレメントだけを一時的に無効化してチャートの網掛け（水色シグナル）の変化を確認できるよう、各ルール配列内に `"is_active": true/false` のトグルスイッチを必ず保持する。Python側は `is_active=false` の要素を無視して計算を行う。
+複雑な数式（例: `(A AND B) OR C`）を組んだ際、ユーザーが特定のルールだけを一時的に無効化し、結果の違いを確認できるようにする。確認先はオレンジ（リストの絞り込み）でも水色（チャートの網掛け）でもよい。各ルール配列内に `"is_active": true/false` のトグルを必ず持つ。計算側は `is_active=false` の要素を無視する。
 
 ■ テーブル：user_metrics（指標インスタンス・比較なし）
 （比較なしの計算定義。主用途はプレイリスト列の表示と、列ごとの抽出。比較は持たない）
@@ -264,45 +264,165 @@ calculate_all(
   - id (型: INTEGER) / 主キー・自動連番（他のテーブルやエレメント参照時はこのidを使用する）
   - user_id (型: TEXT) / ユーザー識別ID
   - filter_type (型: TEXT) / 'element'（部品） または 'condition'（完成品）
-  - filter_name (型: TEXT) / 名前（例: "RSI<30", "A・転換確認型"）
-  - conditions_json (型: TEXT) / AST（抽象構文木）ツリーJSONダンプ
+  - filter_name (型: TEXT) / 表示用の名前（例: "RSI<30", "A・転換確認型"）
+  - conditions_json (型: TEXT) / このフィルターの中身（式）をJSONで保存する欄
 
-※完成品は直書きルールで式を組むのが本体。エレメントは任意でポン付けできる簡略化用。エレメント必須ではない。
-※エレメントは比較まで含んだ自己完結の部品とする（工房で一から作るとき、中身を user_metrics 化しない。また user_metrics を参照しない）。
-※列の指標を左辺にする抽出（列ごとの抽出候補）だけ、列の metric_id を参照してよい。
-※列追加では user_filters に行を作らない（比較がないため。列は user_metrics ＋ columns_json）。
+  【1. 指標の指定（左右で使い回す共通形）】
+  次の4キーを1セットとする。left / right の type が "indicator" のときに使う。
+  - kind … 計算の種類。IndicatorCatalog のキーと一致させる（現在値も含む）
+  - timeframe … 足。"daily"（日足）/ "weekly"（週足）/ "monthly"（月足）
+  - params … パラメータ（期間など。kind によって中身が変わる）
+  - lookback … 何本前の確定足を見るか。整数。初期値は 0
 
-▼ conditions_json の保存データ例（Cursor指示用：ASTツリー構造とis_activeフラグ）
+  【2. 辺の指定（left / right で同じ形）】
+  left と right は、どちらも次のいずれか一方とする（左右対称）。
+  ・固定数値のとき:
+    - type … 常に "number"
+    - number … 数値
+  ・指標のとき:
+    - type … 常に "indicator"
+    - 続けて【1. 指標の指定】と同じ4キー（kind / timeframe / params / lookback）
+
+  ※キー type の注意:
+    塊そのものの type（下の【3】）と、left / right の中の type（この【2】）は、別のオブジェクトのキーである。
+    塊の type は "group" / "filter_reference" / "inline_rule"。
+    辺の type は "number" / "indicator"。
+
+  【3. 塊の種類】
+  conditions_json に保存するデータは、次のいずれか1つの塊から始まる。
+  塊の種類はキー type で示す。
+
+  - "group"
+    複数の条件を AND / OR でまとめる括弧。
+    同一括弧内は、子が複数あっても、つなぐ AND / OR は一種類だけとする。
+  - "filter_reference"
+    保存済みエレメントを、式の一部として参照する塊。
+  - "inline_rule"
+    画面で直書きした、比較1本分のルール。
+
+  【4. 各塊が持つキー】
+
+  ■ type が "group" のとき
+  - logical_operator
+    この括弧内の子どうしを、AND または OR のどちらでつなぐか。
+    子が複数あっても、指定できる値は "AND" または "OR" のどちらか一つだけ。
+  - rules
+    この括弧の中に入る子の一覧（配列）。2つ以上とする。
+    子は "group" / "filter_reference" / "inline_rule" のいずれか。
+    より複雑な式は、子に "group" を入れて括弧を入れ子にする。
+  - is_active
+    true ならこの括弧を有効。false なら括弧ごと計算から外す（式からは消さない）。
+
+  ■ type が "filter_reference" のとき
+  - filter_id
+    参照する user_filters の id。
+    参照してよいのは filter_type が element の行だけ。完成品は参照しない。
+  - is_active
+    true なら有効。false なら計算から外す（式からは消さない）。
+
+  ■ type が "inline_rule" のとき
+  - left … 左辺。【2. 辺の指定】と同じ形。
+  - operator … 比較の種類。例: "<", ">", "<=", ">=", "=", "GC", "DC"
+  - right … 右辺。【2. 辺の指定】と同じ形。
+  - is_active
+    true なら有効。false なら計算から外す（式からは消さない）。
+
+  【5. 保存時にエラーとするもの】
+  ※ left と right がどちらも type "number" のとき（数値どうし）
+  ※ operator が "GC" または "DC" のとき、left / right のどちらか一方でも type "number" のとき
+  ※ group の rules が2つ未満のとき
+  ※ 必須キーが欠けているとき
+  これらは保存せず、画面でエラーにする。実行時に黙って無視しない。
+
+  【6. filter_type ごとの使い方】
+  ※filter_type が element（部品）のとき
+    conditions_json には inline_rule を1本だけ入れる。
+
+  ※filter_type が condition（完成品）のとき
+    inline_rule を並べて式を作るのが本体である。
+    複数本を AND / OR でつなぐときは group を使う。
+    filter_reference でエレメントを式に入れてよい（必須ではない）。
+    完成品の中に、別の完成品を入れてはならない。
+
+  ※プレイリストに列を追加する操作では、user_filters に行を作らない。
+    列の計算定義は user_metrics に保存する。
+    どの列に出すかは app_ui_settings の columns_json に書く。
+    列ごとの抽出（extract_chips）も columns_json 側であり、user_filters とは別である。
+
+  ※フィルター工房でエレメントや完成品を作るとき、user_metrics は作らない。参照もしない。
+
+▼ conditions_json の保存データ例（完成品。上の定義に対応）
 {
   "type": "group",
   "logical_operator": "AND",
+  "is_active": true,
   "rules": [
     {
-      // 事前に作成した「エレメント（部品）」をIDで参照してポン付けした例
       "type": "filter_reference",
-      "filter_id": 10,      // ※user_filtersテーブルのid（部品として作成済みのデータ）を指す
-      "is_active": true     // ★ユーザーが画面のトグルでONにしている状態
+      "filter_id": 10,
+      "is_active": true
     },
     {
-      // グループのネスト（カッコによる複雑な条件の表現）
       "type": "group",
       "logical_operator": "OR",
+      "is_active": true,
       "rules": [
         {
-          // 単発のルールを直接組み込んだ例
-          "type": "condition",
-          "timeframe": "daily",
-          "indicator": "MA",
-          "params": {"period": 25},
+          "type": "inline_rule",
+          "left": {
+            "type": "indicator",
+            "kind": "MA",
+            "timeframe": "daily",
+            "params": { "period": 25 },
+            "lookback": 0
+          },
           "operator": ">",
-          "value_type": "indicator",
-          "value_indicator": "MA",
-          "value_params": {"period": 75},
-          "is_active": false    // ★ユーザーが一時的にOFFにして違いをテストしている状態（式から消さずに無視させる）
+          "right": {
+            "type": "indicator",
+            "kind": "MA",
+            "timeframe": "daily",
+            "params": { "period": 75 },
+            "lookback": 0
+          },
+          "is_active": false
+        },
+        {
+          "type": "inline_rule",
+          "left": {
+            "type": "indicator",
+            "kind": "Price",
+            "timeframe": "daily",
+            "params": {},
+            "lookback": 0
+          },
+          "operator": "<",
+          "right": {
+            "type": "number",
+            "number": 1000
+          },
+          "is_active": true
         }
       ]
     }
   ]
+}
+
+▼ conditions_json の保存データ例（エレメント。比較は1本だけ）
+{
+  "type": "inline_rule",
+  "left": {
+    "type": "indicator",
+    "kind": "RSI",
+    "timeframe": "daily",
+    "params": { "period": 14 },
+    "lookback": 0
+  },
+  "operator": "<",
+  "right": {
+    "type": "number",
+    "number": 30
+  },
+  "is_active": true
 }
 
 ■ テーブル③：symbol_signals
