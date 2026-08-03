@@ -79,12 +79,14 @@ calculate_all(
         "active_mas": [5, 25, 75, 200],      // この4本のMAを計算して！
         "active_emas": [9, 21],              // この2本のEMAを計算して！
         "deviation_targets": [ 
-            {"type": "SMA", "period": 75}, 
-            {"type": "EMA", "period": 21},
-            {"type": "horizontal_line", "value": 150.0} 
+            {"target": "SMA", "period": 75}, 
+            {"target": "EMA", "period": 21},
+            {"target": "horizontal_line", "value": 150.0} 
             // ※上記は「75日SMA、21日EMA、150.0の水平線、それぞれからの現在値の乖離率を計算して！」という指示
+            // ※キーは target（SMA / EMA / horizontal_line / bollinger）。chart_settings.target_type とは別
         ],
-        
+
+
         // ── オシレーター・トレンドの要求 ──
         "need_rsi": true,                    // RSIを計算して！
         "macd_options": {
@@ -252,9 +254,14 @@ calculate_all(
 
 ▼ metric_json の例
   { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
-  { "kind": "Deviation", "timeframe": "daily", "params": { "target_type": "SMA", "period": 50 } }
+  { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 50 } }
 
 ※ kind は IndicatorCatalog（後述・コード定数。DBテーブルにしない）のキーと一致させる。
+※ kind が Deviation のとき、params の主なキー：
+  - target … 乖離の基準。"SMA" / "EMA" / "horizontal_line" / "bollinger"（3-F の「ターゲットの種類」に対応）
+  - period … 期間（SMA / EMA / bollinger のとき）
+  - value … 固定価格（target が horizontal_line のとき）
+  ※ chart_settings の target_type（global / symbol）とは別物。混ぜない。
 ※ 列削除時：その metric_id を参照する列・列ごとの抽出候補（extract_chips）がゼロなら user_metrics からも削除。他で参照中なら残す。
 ※ user_metrics は比較なしの計算定義。フィルター（エレメント／完成品）ではない。
 
@@ -525,7 +532,7 @@ JSON の kind（旧 indicator_name）は、必ず以下の Python 関数にマ�
 ※ metric_id が指す user_metrics の1件について、metric_json（計算の中身）の例：
   id=101 → { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
   id=102 → { "kind": "RSI", "timeframe": "daily", "params": { "period": 14 } }
-  id=103 → { "kind": "Deviation", "timeframe": "daily", "params": { "target_type": "SMA", "period": 25 } }
+  id=103 → { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 25 } }
 ※ 指標の中身は columns_json に埋め込まない（metric_id で参照する）。
 ※ 列ごとの抽出（クリックで順に切替）の詳細は、後述の「指標・列・フィルターの関係」内【列ごとの抽出（クリックで順に切替）】を正とする。
 
@@ -781,18 +788,21 @@ system_playlist_symbols
      条件作成ビルダーのプルダウン連動と表示モード切替ルール
 -----------------------------------------------------------------
 〈仕様定義：UIレイアウト基本構造〉
-フィルター工房での条件構築UIは、プログラミング知識がなくても直感的に操作できるよう、常に「左辺(A)・比較演算子(B)・右辺(C)」の3ブロック構造で表現する。ユーザーの選択結果は、最終的に `user_filters` のASTツリーJSONに変換されて保存される。
-  - 左辺(A)：基準となる対象（例: 現在値, MA, RSI, MACDヒストグラム速度など）
-  - 比較(B)：判定ルール（例: ＜, ＞, ＝, ≦, ＞＝, GC, DCなど）
-  - 右辺(C)：比較対象。「固定値（数値入力）」または「別の指標（左辺と同様のプルダウン）」のトグル切替を可能とする。
+フィルター工房での条件構築UIは、プログラミング知識がなくても直感的に操作できるよう、常に「左辺(A)・比較演算子(B)・右辺(C)」の3ブロック構造で表現する。ユーザーの選択結果は、最終的に `user_filters.conditions_json` に変換されて保存される。保存形の正は 3-B（node_type / side_type / left / right）とする。
+  - 左辺(A)：【2. 辺の指定】と同じ。side_type は "number"（固定数値）または "indicator"（指標）。指標の例: 現在値, MA, RSI, MACDヒストグラム速度など
+  - 比較(B)：判定ルール（例: ＜, ＞, ＝, ≦, ＞＝, GC, DCなど）。JSON では operator
+  - 右辺(C)：左辺と同じ【2. 辺の指定】（左右対称）。side_type は "number" または "indicator"
 
 〈仕様定義：共通UIルール（ルックバック）〉
-※すべてのインジケーター（左辺・右辺問わず、現在値や出来高など単一指標も含む）において、「何本前の確定足データを参照するか」を指定するための「ルックバック（本数入力：初期値0）」枠を必ず末尾に付与する。（例：現在値[1] ＜ MA[1] など、前日のデータを参照するため）
+※左辺または右辺の side_type が "indicator" のとき、「何本前の確定足を見るか」のルックバック（本数入力：初期値0）を必ず付ける。JSON では【1. indicator の指定】の lookback。
+  例（両辺とも indicator）：現在値[1] ＜ MA[1]
+※side_type が "number" の辺には、ルックバック枠は出さない。
+  例（左辺は indicator、右辺は number）：RSI(14)[0] ＜ 30
 
 〈仕様定義：論理演算（AND / OR）とグループ化（カッコ）の視覚的インデントUI表現〉
-  - 複数の条件ブロックを追加する際、ブロック間に「AND（かつ）」または「OR（または）」の接続プルダウンを配置し、ユーザーが論理演算を指定できるようにする。※NORやNANDはユーザーの混乱を招くため実装せず、ANDとORのみで全てのロジックを構成する。
+  - 複数の条件ブロックを追加する際、ブロック間に「AND」または「OR」の接続プルダウンを配置し、ユーザーが論理演算を指定できるようにする。※NORやNANDは実装せず、ANDとORのみとする。
   - 複雑な数式（カッコ）を視覚的に表現するため、UI上では「グループ化（カッコの開始）」を行う。カッコ `(` が選ばれるか、新しくグループがネスト（入れ子）されるたびに、UIコンポーネントが動的に右へ一段インデント（字下げ）され、視覚的なインサイド枠で囲まれる。
-  - 閉じカッコ `)` が入力される、あるいはグループが終了した瞬間に、インデントは左へ1段階戻る構造とする。これにより、どれだけ深いネスト構造になっても、数式の優先順位（塊）を完全に直感認識させるUIとする。これがASTツリーJSON内の `"type": "group"` のネスト構造と1対1で完全連動する。
+  - 閉じカッコ `)` が入力される、あるいはグループが終了した瞬間に、インデントは左へ1段階戻る構造とする。これにより、どれだけ深いネスト構造になっても、数式の優先順位（塊）を直感認識させるUIとする。これが conditions_json 内の node_type が "group" のネストと1対1で連動する。
 
 〈仕様定義：全インジケーターのUIプルダウン連動辞書（スキーマ・全リスト化）〉
 左辺または右辺で選択した「指標の種類」に応じて、UI側で動的に必要なパラメータ入力枠を表示・非表示させる。フロントエンド側で以下のマッピング（辞書）を完全保持して制御する。勝手な項目を作成してはならない。
@@ -841,8 +851,9 @@ system_playlist_symbols
        4. `出来高 が 過去20日平均の 2.0倍 より 大きい`
 
 〈仕様定義：エレメントの組み込みとON/OFF制御〉
-  - ブロックの追加時には、新規ルール（直接入力）だけでなく、事前に作成済みの「エレメント（部品）」をプルダウンから呼び出して「1つのブロック（`filter_reference`）」としてポン付けできるUIを提供する。
-  - 全ての条件ブロックの横には「ON/OFF」のトグルスイッチ（または目玉アイコン）を配置し、クリックすることでJSON内の `"is_active"` を true/false に切り替える。これにより、ユーザーは式の構造を破壊することなく、特定の要素だけを瞬時に無効化してチャート上のシグナル（網掛け）をリアルタイムにテストできる。
+  - ブロックの追加時には、新規の直書きルール（inline_rule）だけでなく、事前に作成済みの「エレメント（部品）」をプルダウンから呼び出して「1つのブロック（node_type が filter_reference）」としてポン付けできるUIを提供する。
+  - inline_rule / filter_reference / group の各ブロックの横には「ON/OFF」のトグルを置き、JSON の is_active を true/false に切り替える。false の要素は一時的に計算から外し、リアルタイムにテストすることができる（式からは消さない）。
+  - 確認先はオレンジ（リストの絞り込み）でも水色（チャートの網掛け）でもよい（3-B の ON/OFF と同じ）。
 
 
   
