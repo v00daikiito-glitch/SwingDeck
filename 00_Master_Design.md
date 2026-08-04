@@ -39,23 +39,20 @@
 2. 関数構成（計算工場：indicators.py）
 -----------------------------------------------------------------
 📁 indicators.py (計算工場)
- ├── function calculate_change_rate(価格データ, 期間_int) ─── [指定本数前の終値との変化率を計算する部品]
+ ├── function calculate_change_rate(価格データ, period) ─── [指定本数前の終値との変化率を計算する部品]
  ├── function calculate_high_low_bounds(価格データ) ─ [52週高値/安値(52WH/L)、過去最高値/安値(ATH/L)を割り出す部品]
- ├── function calculate_ma(価格データ, 期間_int, source_str) ───── [MAを計算するだけの部品]
- ├── function calculate_ema(価格データ, 期間_int, source_str) ──── [EMAを計算するだけの部品]
- ├── function calculate_rsi(価格データ, 期間_int, source_str) ──────── [RSIを計算するだけの部品]
+ ├── function calculate_ma(価格データ, period, source) ───── [MAを計算するだけの部品]
+ ├── function calculate_ema(価格データ, period, source) ──── [EMAを計算するだけの部品]
+ ├── function calculate_rsi(価格データ, period, source) ──────── [RSIを計算するだけの部品]
  ├── function calculate_deviation(価格データ, ターゲット指定) [指定したターゲット(MA, EMA, ボリンジャーバンド, 水平線等)からの乖離率を計算する汎用部品]
-├── function calculate_macd_line(価格データ, fast_ema_period, slow_ema_period, source) [MACDライン(高速EMAと低速EMAの差)を計算する部品。※内部で calculate_ema を呼び出して使用する]
-├── function calculate_macd_signal(macd_line, signal_ema_period) [MACDシグナル線(MACDラインのEMA)を計算する部品。※内部で calculate_ema を呼び出して使用する]
-├── function calculate_macd_hist(macd_line, macd_signal) [MACDヒストグラム(MACDライン - シグナル線)を計算する部品]
-├── function calculate_macd_velocity(macd_hist, smooth_ema_period, velocity_lookback) [MACDヒストグラムを短めのEMAで平滑化した後、指定本数前との差分(傾き)を取り、ノイズを抑えた「速度」を計算する部品。※内部で calculate_ema を呼び出して使用する]
-
-
-
- ├── function calculate_atr(価格データ, 期間_int) ──────── [ATRを計算する部品]
- ├── function calculate_volume_surge(出来高データ, 期間_int) ─ [直近の出来高が、指定期間の平均出来高の「何倍」かを計算する部品]
- ├── function calculate_bollinger_bands(価格データ, 期間_int, 乗数_float, ma_type_str, source_str) [ボリンジャーバンドの上下限(＋σ, －σの価格線)を計算する部品]
- ├── function calculate_bollinger_bandwidth(価格データ, 期間_int, 乗数_float, ma_type_str, source_str) [ボリンジャーバンド幅(収縮度合いを示す数値)を計算する部品] 
+ ├── function calculate_macd_line(価格データ, fast_ema_period, slow_ema_period, source) [MACDライン(高速EMAと低速EMAの差)を計算する部品。※内部で calculate_ema を呼び出して使用する]
+ ├── function calculate_macd_signal(macd_line, signal_ema_period) [MACDシグナル線(MACDラインのEMA)を計算する部品。※内部で calculate_ema を呼び出して使用する]
+ ├── function calculate_macd_hist(macd_line, macd_signal) [MACDヒストグラム(MACDライン - シグナル線)を計算する部品]
+ ├── function calculate_macd_velocity(macd_hist, smooth_ema_period, velocity_lookback) [MACDヒストグラムを短めのEMAで平滑化した後、指定本数前との差分(傾き)を取り、ノイズを抑えた「速度」を計算する部品。※内部で calculate_ema を呼び出して使用する]
+ ├── function calculate_atr(価格データ, period) ──────── [ATRを計算する部品]
+ ├── function calculate_volume_surge(出来高データ, period) ─ [直近の出来高が、指定期間の平均出来高の「何倍」かを計算する部品]
+ ├── function calculate_bollinger_bands(価格データ, period, multiplier, ma_type, source) [ボリンジャーバンドの上下限(＋σ, －σの価格線)を計算する部品]
+ ├── function calculate_bollinger_bandwidth(価格データ, period, multiplier, ma_type, source) [ボリンジャーバンド幅(収縮度合いを示す数値)を計算する部品]
  └── function calculate_all(生データ, config_json) 
      └── 役割：画面（マルチデッキ画面や個別チャート）に必要な加工データを一発で揃えてパックにして返す大ボス関数。
                引数は常に2つ（生データ, config_json）。何を計算するかは、直後の用語に従う。
@@ -96,7 +93,7 @@ calculate_all(
         "timeframe": "daily",                // 「日足」か「週足」かを指定
         
         // ── 基本加工データの要求 ──
-        "need_change_rate": [7, 10],         // 変化率を計算して！ 配列の各数が「何本前比」（＝期間_int／metric_json.params.period）。例: 7本前比と10本前比
+        "need_change_rate": [7, 10],         // 変化率を計算して！ 配列の各数が「何本前比」（＝period／metric_json.params.period）。例: 7本前比と10本前比
         "need_high_low_bounds": ["52WH", "52WL", "ATH", "ATL"], // 高値/安値を計算して！ 配列の各要素は "52WH" / "52WL" / "ATH" / "ATL" のいずれか
 
 
@@ -113,7 +110,7 @@ calculate_all(
 
 
         // ── オシレーター・トレンドの要求 ──
-        "need_RSI": [14, 7],                 // RSIを計算して！ 配列の各数が期間（＝期間_int／metric_json.params.period）。例: RSI(14)とRSI(7)
+        "need_RSI": [14, 7],                 // RSIを計算して！ 配列の各数が期間（＝period／metric_json.params.period）。例: RSI(14)とRSI(7) 
         // MACD速度だけ返す例。JSONに line/signal/hist は書かない。
         // calculate_all が下の数値を使い、内側で line→signal→hist→velocity の順に関数を呼ぶ（部品連携設計）。戻り値に入るのは速度だけ。
         "need_MACD_velocity": {"fast_ema_period": 12, "slow_ema_period": 26, "signal_ema_period": 9, "smooth_ema_period": 5, "velocity_lookback": 1, "source": "close"},
@@ -224,7 +221,7 @@ calculate_all(
   // マルチデッキ画面の右上チェックボックスと連動し、アプリ全体で一斉に表示/非表示を切り替える設定もここに統合
   "SubIndicators": {
     "VolumeMA": {"period": 20, "visible": true},                           // 出来高MAの計算期間と一括表示状態。初期値はtrue (1=ON)。
-    "MACD": {"fast": 12, "slow": 26, "signal": 9, "visible": true},        // MACD短期EMA、長期EMA、シグナル線の期間と一括表示状態。初期値はtrue (1=ON)。
+    "MACD": {"fast_ema_period": 12, "slow_ema_period": 26, "signal_ema_period": 9, "visible": true}, // 画面のMACD一式用。fast_ema_period / slow_ema_period はライン、signal_ema_period はシグナル線。visible は一括表示。初期値はtrue (1=ON)。
     "RSI": {"period": 14, "visible": true},                                // RSIの計算期間と一括表示状態。初期値はtrue (1=ON)。
     "BollingerBands": {                                                    // ボリンジャーバンドの設定
       "period": 20, 
