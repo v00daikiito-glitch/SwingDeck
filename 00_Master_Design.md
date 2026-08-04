@@ -19,7 +19,7 @@
 ・各銘柄の時系列データ（日足・週足・月足の OHLCV：始値, 高値, 安値, 終値, 出来高）
 
 【加工データ】
-・変化率（前日比など） [前日の終値と本日の終値の比率をパーセントで表したもの]
+・変化率（period で本数を指定） [指定本数前の終値と、基準とする足の終値の比率をパーセントで表したもの（例：7本前比＝7日変化率）]
 ・52WH（52週高値） / 52WL（52週安値） [直近52週間における最高値および最安値の価格]
 ・ATH（過去最高値） / ATL（過去最安値） [上場来の過去最高値および過去最安値の価格]
 ・MA（単純移動平均線：SMA） [指定した期間の終値の単純平均価格を結んだ線]
@@ -39,46 +39,71 @@
 2. 関数構成（計算工場：indicators.py）
 -----------------------------------------------------------------
 📁 indicators.py (計算工場)
- ├── function calculate_change_rate(価格データ) ─── [変化率を計算する部品]
+ ├── function calculate_change_rate(価格データ, 期間_int) ─── [指定本数前の終値との変化率を計算する部品]
  ├── function calculate_high_low_bounds(価格データ) ─ [52週高値/安値(52WH/L)、過去最高値/安値(ATH/L)を割り出す部品]
  ├── function calculate_ma(価格データ, 期間_int, source_str) ───── [MAを計算するだけの部品]
  ├── function calculate_ema(価格データ, 期間_int, source_str) ──── [EMAを計算するだけの部品]
  ├── function calculate_rsi(価格データ, 期間_int, source_str) ──────── [RSIを計算するだけの部品]
  ├── function calculate_deviation(価格データ, ターゲット指定) [指定したターゲット(MA, EMA, ボリンジャーバンド, 水平線等)からの乖離率を計算する汎用部品]
- ├── function calculate_macd_line(価格データ, fast_ema期間, slow_ema期間, source_str) [MACDライン(高速EMAと低速EMAの差)を計算する部品。※内部で calculate_ema を呼び出して使用する]
- ├── function calculate_macd_signal(macd_lineデータ, signal_ema期間) [MACDシグナル線(MACDラインのEMA)を計算する部品。※内部で calculate_ema を呼び出して使用する]
- ├── function calculate_macd_hist(macd_lineデータ, macd_signalデータ) [MACDヒストグラム(MACDライン - シグナル線)を計算する部品]
- ├── function calculate_macd_velocity(生ヒストグラムデータ, 平滑化ema期間, ルックバック本数) [生のヒストグラムを短めのEMAで平滑化した後、指定本数前のデータとの差分(傾き)を取り、ノイズを抑えた「速度」を計算する部品。※内部で calculate_ema を呼び出して使用する]
+├── function calculate_macd_line(価格データ, fast_ema_period, slow_ema_period, source) [MACDライン(高速EMAと低速EMAの差)を計算する部品。※内部で calculate_ema を呼び出して使用する]
+├── function calculate_macd_signal(macd_line, signal_ema_period) [MACDシグナル線(MACDラインのEMA)を計算する部品。※内部で calculate_ema を呼び出して使用する]
+├── function calculate_macd_hist(macd_line, macd_signal) [MACDヒストグラム(MACDライン - シグナル線)を計算する部品]
+├── function calculate_macd_velocity(macd_hist, smooth_ema_period, velocity_lookback) [MACDヒストグラムを短めのEMAで平滑化した後、指定本数前との差分(傾き)を取り、ノイズを抑えた「速度」を計算する部品。※内部で calculate_ema を呼び出して使用する]
+
+
+
  ├── function calculate_atr(価格データ, 期間_int) ──────── [ATRを計算する部品]
  ├── function calculate_volume_surge(出来高データ, 期間_int) ─ [直近の出来高が、指定期間の平均出来高の「何倍」かを計算する部品]
  ├── function calculate_bollinger_bands(価格データ, 期間_int, 乗数_float, ma_type_str, source_str) [ボリンジャーバンドの上下限(＋σ, －σの価格線)を計算する部品]
- ├── function calculate_bollinger_bandwidth(価格データ, 期間_int, 乗数_float, ma_type_str, source_str) [ボリンジャーバンド幅(収縮度合いを示す数値)を計算する部品]
- └── function calculate_all(生データ, 注文書_json) 
-      └── 役割：画面（マルチデッキ画面や個別チャート）に必要な加工データを一発で揃えてパックにして返す大ボス関数。
-                注文書（引数）で指定された指標（visible=trueのもの）だけをピンポイントで計算し、非表示の指標は計算をスキップして爆速処理を維持する。
+ ├── function calculate_bollinger_bandwidth(価格データ, 期間_int, 乗数_float, ma_type_str, source_str) [ボリンジャーバンド幅(収縮度合いを示す数値)を計算する部品] 
+ └── function calculate_all(生データ, config_json) 
+     └── 役割：画面（マルチデッキ画面や個別チャート）に必要な加工データを一発で揃えてパックにして返す大ボス関数。
+               引数は常に2つ（生データ, config_json）。何を計算するかは、直後の用語に従う。
+
+※用語（この節で使う。先に定義し、以降この意味だけを使う）
+・kind … IndicatorCatalog（3-D）の一覧で、矢印 ──> の左側に書く引用符付き文字列。例: "ATR", "change_rate", "MA"。一覧の全文は 3-D を正とする。
+・config_json … calculate_all の第2引数になる JSON オブジェクト。
+・キー … config_json のプロパティ名。例: "timeframe", "need_ATR"。
+・need_ キー … キーのうち、文字列 need_ の直後に kind を1文字も変えず繋げたもの。例: kind が ATR なら need_ATR。kind が change_rate なら need_change_rate。
+・IndicatorCatalog で「加工が必要」と書いてある kind:
+  - 対応する need_ キーが config_json にある → その kind を計算し、calculate_all の戻り値に含める
+  - 対応する need_ キーが無い → その kind は計算しない。戻り値にも入れない
+  例: need_ATR がある → ATR を計算して戻す。need_RSI が無い → RSI は計算しない
+・IndicatorCatalog で「生データそのもの」と書いてある kind（Price / Volume）:
+  - need_ キーは付けない。生データから読む。上の「計算しない」には当たらない
+・MACD_velocity … need_MACD_velocity があるとき、calculate_all は戻り値用の速度を作るため、内側で MACD_line → MACD_signal → MACD_hist → MACD_velocity を順に実行する。これは JSON で他キーを参照するのではなく、部品連携設計に従った固定手順である。途中結果を戻り値にも入れるときだけ need_MACD_line 等を別途付ける。
 
 ※各インジケーター関数の計算ロジックおよび部品連携設計
 - データベースや他関数への二重記述（DRY原則違反）とバグを防ぐため、`calculate_macd_line` などの高次の関数内部では、すでに定義されている `calculate_ema` 等の低次の基礎関数を「適宜呼び出して（再利用して）」計算を行うこと。
 - `calculate_macd_line` で算出したデータを `calculate_macd_signal` へ流し込み、その結果をさらに `calculate_macd_hist` に渡し、最終的に出来上がったデータを `calculate_macd_velocity` に順次引き渡す「バケツリレー方式（パイプライン設計）」を厳守することで、関数の独立性とパフォーマンスを極限まで維持する。
 
 
-# 例：画面側の設定や、スクリーニングに必要な要求をぎゅっとまとめた「注文書」のイメージ
-# （DBのJSONカラムから取り出した設定を、そのまま calculate_all に渡す）
+※config_json の書き方（need_ キーの作り方と「計算する / しない」は上記「用語」を正とする）
+・Price / Volume は生データ参照のため、config_json に need_ キーを設けない。
+・値の形：
+  - 期間（本数）だけを渡す kind → 整数の配列（各要素が期間）。例: need_MA, need_EMA, need_RSI, need_ATR, need_change_rate, need_Volume_Surge
+  - need_high_low_bounds → 文字列の配列。各要素は次のいずれかのみ: "52WH", "52WL", "ATH", "ATL"
+  - パラメータが複数の kind → オブジェクト（複数セットならオブジェクトの配列）。オブジェクト内のプロパティ名と意味は、その kind の calculate_* の引数に対応させる（下の例および各関数定義を正とする）
+・MACD：need_MACD_velocity があるとき、calculate_all はそのオブジェクトの数値だけを使い、内側で calculate_macd_line → calculate_macd_signal → calculate_macd_hist → calculate_macd_velocity の順に呼ぶ（部品連携設計）。config_json に line/signal/hist への参照は書かない。戻り値にライン等も入れるときだけ、それぞれの need_MACD_line / need_MACD_signal / need_MACD_hist を追加する。
+・足（日/週/月）はキー timeframe で渡す（need_ キーではない。「計算する / しない」の判定対象外）。
+
+
+
+# 例：config_json（このオブジェクトを calculate_all の第2引数に渡す）
 calculate_all(
     raw_data=任天堂の生データ(OHLCV), 
-    
-    // ── 以下が注文書（config_json）の中身 ──
     config_json={
         "timeframe": "daily",                // 「日足」か「週足」かを指定
         
         // ── 基本加工データの要求 ──
-        "need_change_rate": true,            // 変化率を計算して！
-        "need_bounds": {"52W": true, "ATH_ATL": true}, // 52週高安、ATH/ATLを計算して！
-        
+        "need_change_rate": [7, 10],         // 変化率を計算して！ 配列の各数が「何本前比」（＝期間_int／metric_json.params.period）。例: 7本前比と10本前比
+        "need_high_low_bounds": ["52WH", "52WL", "ATH", "ATL"], // 高値/安値を計算して！ 配列の各要素は "52WH" / "52WL" / "ATH" / "ATL" のいずれか
+
+
         // ── 移動平均・乖離率の要求 ──
-        "active_mas": [5, 25, 75, 200],      // この4本のMAを計算して！
-        "active_emas": [9, 21],              // この2本のEMAを計算して！
-        "deviation_targets": [ 
+        "need_MA": [5, 25, 75, 200],         // この4本のMAを計算して！ 配列の各数がMA期間
+        "need_EMA": [9, 21],                 // この2本のEMAを計算して！ 配列の各数がEMA期間
+        "need_Deviation": [ 
             {"target": "SMA", "period": 75}, 
             {"target": "EMA", "period": 21},
             {"target": "horizontal_line", "value": 150.0} 
@@ -88,23 +113,20 @@ calculate_all(
 
 
         // ── オシレーター・トレンドの要求 ──
-        "need_rsi": true,                    // RSIを計算して！
-        "macd_options": {
-            "need_macd": true,               // MACD本体とシグナル、ヒストグラムを計算して！
-            "fast": 12, "slow": 26, "signal": 9,
-            "need_velocity": true,           // MACDヒストグラムの「速度」を計算して！
-            "velocity_smooth_period": 5,     // ヒストグラム平滑化EMA期間
-            "velocity_lookback": 1           // 速度のルックバック本数
-        },
-        "need_atr": {"period": 14},          // ATRを計算して！
-        "need_volume_surge": {"period": 20}, // 出来高急増を計算して！
-        "need_bollinger": {                  // ボリンジャーバンドを計算して！
+        "need_RSI": [14, 7],                 // RSIを計算して！ 配列の各数が期間（＝期間_int／metric_json.params.period）。例: RSI(14)とRSI(7)
+        // MACD速度だけ返す例。JSONに line/signal/hist は書かない。
+        // calculate_all が下の数値を使い、内側で line→signal→hist→velocity の順に関数を呼ぶ（部品連携設計）。戻り値に入るのは速度だけ。
+        "need_MACD_velocity": {"fast_ema_period": 12, "slow_ema_period": 26, "signal_ema_period": 9, "smooth_ema_period": 5, "velocity_lookback": 1, "source": "close"},
+
+        "need_ATR": [14, 20],                // ATRを計算して！ 配列の各数が期間。例: ATR(14)とATR(20)
+        "need_Volume_Surge": [20, 10],       // 出来高急増を計算して！ 配列の各数が平均期間。例: 20本と10本
+        "need_Bollinger_Bands": {            // ボリンジャーバンドを計算して！
             "period": 20, 
             "multiplier": 2.0, 
             "ma_type": "SMA", 
             "source": "close"
         },
-        "need_bollinger_bandwidth": {        // ボリンジャーバンド幅を計算して！
+        "need_Bollinger_Bandwidth": {        // ボリンジャーバンド幅を計算して！
             "period": 20, 
             "multiplier": 2.0, 
             "ma_type": "SMA", 
@@ -115,10 +137,12 @@ calculate_all(
 
 # 例：マルチデッキ画面（複数分割チャート）
  │
- ├── ① [チャート1: 任天堂] の表示要求 ──> calculate_all(任天堂, 日足, 注文書) ──> 計算結果をチャート1へ描画
- ├── ② [チャート2: ソニー] の表示要求 ──> calculate_all(ソニー, 日足, 注文書) ──> 計算結果をチャート2へ描画
- ├── ③ [チャート3: トヨタ] の表示要求 ──> calculate_all(トヨタ, 週足, 注文書) ──> 計算結果をチャート3へ描画
+ ├── ① [チャート1: 任天堂] の表示要求 ──> calculate_all(任天堂の生データ, config_json) ──> 計算結果をチャート1へ描画
+ ├── ② [チャート2: ソニー] の表示要求 ──> calculate_all(ソニーの生データ, config_json) ──> 計算結果をチャート2へ描画
+ ├── ③ [チャート3: トヨタ] の表示要求 ──> calculate_all(トヨタの生データ, config_json) ──> 計算結果をチャート3へ描画
  垂直に並列処理...
+
+ ※各行の config_json は calculate_all の第2引数であり、chart_settings そのものではない。chart_settings（および画面状態）からその呼び出し用に組み立てて渡す。生データは銘柄ごと。config_json の中身は呼び出しごとに同じことも違うこともある。
 
 
 3. データベース設計（サーバー・複数デバイス間同期前提）
@@ -225,8 +249,7 @@ calculate_all(
    データがあればそれを100%優先。なければ【テーブル①】から `target_type='global'` として、任天堂の国（`JP`）、現在の足（`daily`）に一致するデフォルト設定データを読み込んで適用する。
 
 3. [計算工場への発注]
-   上記で確定した設定の中から `visible=true`（チェックON）の期間だけを抽出し、`active_mas=[5, 25, 75, 200]` などの注文書（config_json）を作成。これを `calculate_all()` に生データと一緒に放り込んで、必要な加工データのみを最速で計算・取得し、画面に描画する。
-
+上記で確定した設定の中から `visible=true`（チェックON）の期間だけを抽出し、`need_MA=[5, 25, 75, 200]` などを入れた config_json を作る。これを `calculate_all(生データ, config_json)` に渡して、必要な加工データだけ計算・描画する。
 
 3-B. フィルター工房＆定義（Filter Workshop / Logic）
      条件定義（部品と完成品の2層分離 ＆ 適用先の定義）
@@ -243,27 +266,6 @@ calculate_all(
 
 〈仕様定義：ON/OFFフラグによる直感的な条件テスター〉
 複雑な数式（例: `(A AND B) OR C`）を組んだ際、ユーザーが特定のルールだけを一時的に無効化し、結果の違いを確認できるようにする。確認先はオレンジ（リストの絞り込み）でも水色（チャートの網掛け）でもよい。各ルール配列内に `"is_active": true/false` のトグルを必ず持つ。計算側は `is_active=false` の要素を無視する。
-
-■ テーブル：user_metrics（指標インスタンス・比較なし）
-（比較なしの計算定義。主用途はプレイリスト列の表示と、列ごとの抽出。比較は持たない）
-
-  - id (型: INTEGER) / 主キー・自動連番。他から指すときは metric_id と呼ぶ（同じ番号）
-  - user_id (型: TEXT) / ユーザー識別ID
-  - name (型: TEXT) / 任意。表示用（例: "7日変化率"）。空でも可
-  - metric_json (型: TEXT) / 指標インスタンスJSON
-
-▼ metric_json の例
-  { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
-  { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 50 } }
-
-※ kind は IndicatorCatalog（後述・コード定数。DBテーブルにしない）のキーと一致させる。
-※ kind が Deviation のとき、params の主なキー：
-  - target … 乖離の基準。"SMA" / "EMA" / "horizontal_line" / "bollinger"（3-F の「ターゲットの種類」に対応）
-  - period … 期間（SMA / EMA / bollinger のとき）
-  - value … 固定価格（target が horizontal_line のとき）
-  ※ chart_settings の target_type（global / symbol）とは別物。混ぜない。
-※ 列削除時：その metric_id を参照する列・列ごとの抽出候補（extract_chips）がゼロなら user_metrics からも削除。他で参照中なら残す。
-※ user_metrics は比較なしの計算定義。フィルター（エレメント／完成品）ではない。
 
 ■ テーブル②：user_filters
 （フィルター工房で作成された「エレメント」と「条件（完成品）」のマスターデータ）
@@ -484,8 +486,12 @@ calculate_all(
 ・銘柄の手動並び替え（ドラッグ＆ドロップ）はコンセプト外のため廃止し、データソートを正とする。列の左右順（slot）の入れ替えは可。
 
 ※IndicatorCatalog（種類カタログ・コード定数。DBテーブルにしない）：
-アプリが用意するメニュー／入力枠／Python関数の対応。ユーザー操作では増減しない。3-F の入力枠辞書と一体。
-JSON の kind（旧 indicator_name）は、必ず以下の Python 関数にマッピングすること。勝手な関数名を作ってはならない。本設計書で定義されたすべての関数が漏れなく網羅されていること。
+アプリが用意するメニュー／入力枠／参照先の対応。ユーザー操作では増減しない。3-F の入力枠辞書と一体。
+JSON の kind は、次のいずれかと一致させる。勝手なキー名を作ってはならない。
+・生データそのもの … 関数は呼ばず、OHLCV の該当列を使う
+・加工が必要 … 右の calculate_* にマッピングする（本設計書の関数を漏れなく網羅）
+  - "Price" ──────────────> 生データ（終値 close）。関数は呼ばない
+  - "Volume" ─────────────> 生データ（出来高 volume）。関数は呼ばない
   - "change_rate" ────────> function calculate_change_rate()
   - "high_low_bounds" ────> function calculate_high_low_bounds()
   - "MA" ─────────────────> function calculate_ma()
@@ -501,6 +507,27 @@ JSON の kind（旧 indicator_name）は、必ず以下の Python 関数にマ�
   - "Bollinger_Bands" ────> function calculate_bollinger_bands()
   - "Bollinger_Bandwidth" ─> function calculate_bollinger_bandwidth()
 
+■ テーブル：user_metrics（指標インスタンス・比較なし）
+（比較なしの計算定義。主用途はプレイリスト列の表示と、列ごとの抽出。比較は持たない）
+※フィルター工房の user_filters（エレメント／完成品）とは別物。工房では作らない・参照しない。
+
+  - id (型: INTEGER) / 主キー・自動連番。他から指すときは metric_id と呼ぶ（同じ番号）
+  - user_id (型: TEXT) / ユーザー識別ID
+  - name (型: TEXT) / 任意。表示用（例: "7日変化率"）。空でも可
+  - metric_json (型: TEXT) / 指標インスタンスJSON
+
+▼ metric_json の例
+  { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
+  { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 50 } }
+
+※ kind は上記 IndicatorCatalog（コード定数。DBテーブルにしない）のキーと一致させる。
+※ kind が change_rate のとき、params の主なキー：
+  - period … 何本前の終値と比べるか（必須。例: 7 なら「7本前比」。7日変化率の「7」）
+※ kind が Deviation のとき、params の主なキー：
+  - target … 乖離の基準の種類。"SMA" / "EMA" / "horizontal_line" / "bollinger"（3-F の「ターゲットの種類」に対応）
+  - period … 期間（SMA / EMA / bollinger のとき）
+  - value … 固定価格（target が horizontal_line のとき）
+※ 列削除時：その metric_id を参照する列・列ごとの抽出候補（extract_chips）がゼロなら user_metrics からも削除。他で参照中なら残す。
 
 ■ テーブル⑤：app_ui_settings（アプリ全体共通のUI状態）
 （すべてのプレイリストで共通する列設定、抽出フィルター、最新のソート・選択状態を保持）
@@ -806,9 +833,9 @@ system_playlist_symbols
 
 〈仕様定義：全インジケーターのUIプルダウン連動辞書（スキーマ・全リスト化）〉
 左辺または右辺で選択した「指標の種類」に応じて、UI側で動的に必要なパラメータ入力枠を表示・非表示させる。フロントエンド側で以下のマッピング（辞書）を完全保持して制御する。勝手な項目を作成してはならない。
-  - 【現在値 (Price)】 ───────────────────> [ルックバック (本数入力：初期値0)]
-  - 【出来高 (Volume)】 ──────────────────> [ルックバック (本数入力：初期値0)]
-  - 【変化率 (Change Rate)】 ─────────────> [足 (日/週/月)] ＋ [ルックバック (本数入力：初期値0)]
+  - 【現在値 (Price)】 ───────────────────> [足 (日/週/月)] ＋ [ルックバック (本数入力：初期値0)]
+　- 【出来高 (Volume)】 ──────────────────> [足 (日/週/月)] ＋ [ルックバック (本数入力：初期値0)]
+  - 【変化率 (Change Rate)】 ─────────────> [足 (日/週/月)] ＋ [期間 (数値入力：何本前比か)] ＋ [ルックバック (本数入力：初期値0)]
   - 【MA (単純移動平均)】 ────────────────> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [価格ソース(Source)] ＋ [ルックバック (本数入力：初期値0)]
   - 【EMA (指数平滑移動平均)】 ───────────> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [価格ソース(Source)] ＋ [ルックバック (本数入力：初期値0)]
   - 【RSI】 ──────────────────────────────> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [価格ソース(Source)] ＋ [ルックバック (本数入力：初期値0)]
@@ -820,7 +847,7 @@ system_playlist_symbols
        ├── (MA/EMA選択時) ──> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [価格ソース(Source)] ＋ [ルックバック (初期値0)]
        ├── (水平線選択時) ──> [固定価格 (数値入力)] ＋ [ルックバック (初期値0)]
        └── (ボリンジャーバンド選択時) ──> [足 (日/週/月)] ＋ [期間 (Length)] ＋ [乗数 (Multiplier)] ＋ [移動平均の種類 (Basis MA Type)] ＋ [価格ソース (Source)] ＋ [対象 (＋σ / －σ)] ＋ [ルックバック (初期値0)]
-  - 【高値/安値 (Bounds)】 ───────────────> [種類 (52WH / 52WL / ATH / ATL)] ＋ [ルックバック (初期値0)]
+  - 【高値/安値 (high_low_bounds)】 ──────> [種類 (52WH / 52WL / ATH / ATL)] ＋ [ルックバック (初期値0)]
   - 【ATR】 ──────────────────────────────> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [ルックバック (初期値0)]
   - 【出来高急増 (Volume Surge)】 ─────────> [足 (日/週/月)] ＋ [期間 (数値入力)] ＋ [ルックバック (初期値0)]
   - 【ボリンジャーバンド（価格ライン）】 ────> [足 (日/週/月)] ＋ [期間 (Length: 数値入力)] ＋ [乗数 (Multiplier: 数値入力)] ＋ [移動平均の種類 (Basis MA Type: SMA/EMA等)] ＋ [価格ソース (Source: close/open等)] ＋ [対象 (＋σライン / －σライン)] ＋ [ルックバック (初期値0)]
