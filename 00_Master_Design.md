@@ -51,7 +51,7 @@
  ├── function calculate_macd_velocity(macd_hist, smooth_ema_period, velocity_lookback) [MACDヒストグラムを短めのEMAで平滑化した後、指定本数前との差分(傾き)を取り、ノイズを抑えた「速度」を計算する部品。※内部で calculate_ema を呼び出して使用する]
  ├── function calculate_atr(価格データ, period) ──────── [ATRを計算する部品]
  ├── function calculate_volume_surge(出来高データ, period) ─ [直近の出来高が、指定期間の平均出来高の「何倍」かを計算する部品]
- ├── function calculate_bollinger_bands(価格データ, period, multiplier, ma_type, source) [ボリンジャーバンドの上下限(＋σ, －σの価格線)を計算する部品]
+ ├── function calculate_bollinger_bands(価格データ, period, multiplier, ma_type, source) [ボリンジャーバンドの＋σ線と−σ線を計算する部品。引数名は kind "Bollinger_Bands" の params のうち period / multiplier / ma_type / source と一致させる。params のキー band（"both" / "upper" / "lower"）は引数ではなく、戻り値の使い方の指定。意味は config_json の例の直後の共通定義を正とする]
  ├── function calculate_bollinger_bandwidth(価格データ, period, multiplier, ma_type, source) [ボリンジャーバンド幅(収縮度合いを示す数値)を計算する部品]
  └── function calculate_all(生データ, config_json) 
      └── 役割：画面（マルチデッキ画面や個別チャート）に必要な加工データを一発で揃えてパックにして返す大ボス関数。
@@ -121,7 +121,8 @@ calculate_all(
             "period": 20, 
             "multiplier": 2.0, 
             "ma_type": "SMA", 
-            "source": "close"
+            "source": "close",
+            "band": "both"
         },
         "need_Bollinger_Bandwidth": {        // ボリンジャーバンド幅を計算して！
             "period": 20, 
@@ -131,6 +132,11 @@ calculate_all(
         }
     }
 )
+
+※ kind が "Bollinger_Bands" のときの params（共通定義。need_Bollinger_Bands、metric_json、工房の indicator、baseline_json の indicator で同じキーを使う。次の5つをすべて書く）:
+  - period / multiplier / ma_type / source … calculate_bollinger_bands の引数と同じ
+  - band … 必須。値は "both"（上下両方）/ "upper"（＋σのみ）/ "lower"（−σのみ）。チャート用の need_Bollinger_Bands は "both"。工房の左辺・右辺や baseline の片側など、線を1本として使うときは "upper" または "lower"。3-F の画面項目「対象（＋σ / －σ）」は、"upper" / "lower" のときに対応する
+
 
 # 例：マルチデッキ画面（複数分割チャート）
  │
@@ -273,25 +279,37 @@ calculate_all(
   - filter_name (型: TEXT) / 表示用の名前（例: "RSI<30", "A・転換確認型"）
   - conditions_json (型: TEXT) / このフィルターの中身（式）をJSONで保存する欄
 
-  【1. indicator（指標）の指定（左右で使い回す共通形）】
-  indicator（指標）を表すときの共通形。次の4キーを1セットとする（必須）。
-  - kind … 計算の種類。IndicatorCatalog のキーと一致させる（現在値も含む）
-  - timeframe … 足。"daily"（日足）/ "weekly"（週足）/ "monthly"（月足）
-    ※現在値でも、日足の終値と週足の終値は別なので timeframe は残す。
-  - params … その kind 固有のパラメータ（期間など）。不要なら空の {} とする
-  - lookback … 何本前の確定足を見るか。整数。初期値は 0
+  ※ここから【5】まで（および続く保存例）は、上の conditions_json の書き方である。
+    ユーザーが工房で作った「比較の式」を、この欄にどう格納するかを定める。
+    【1】は比較の左辺・右辺、【2】は辺が指標のときの詳細、【3】【4】は式全体の組み立て、【5】は保存時に拒否するもの、である。
 
-  【2. 辺の指定（left / right で同じ形・左右対称）】
-  left と right は、どちらも次のいずれか一方とする。
-  どちらであるかはキー side_type で示す。値は "number" または "indicator" だけ。
+  【1. 辺の指定（left / right で同じ形・左右対称）】
+  conditions_json の比較1本（inline_rule）における左辺・右辺の形。
+  left と right は、それぞれ次の3つのうちどれか一つとする。
+  どれであるかはキー side_type で示す。値は "number" / "indicator" / "baseline" の3つ。
 
   ・number（固定数値）のとき（必須キー: side_type, value）
     - side_type … 常に "number"
     - value … 比べる数値
 
-  ・indicator（指標）のとき（必須キー: side_type ＋【1】の4キー）
+  ・indicator（指標）のとき（必須キー: side_type ＋【2】の4キー）
     - side_type … 常に "indicator"
-    - 続けて【1. indicator（指標）の指定】と同じ4キー（kind / timeframe / params / lookback）
+    - 続けて【2. indicator（指標）の指定】と同じ4キー（kind / timeframe / params / lookback）
+
+  ・baseline（基準ライン）のとき（必須キー: side_type, role）
+    - side_type … 常に "baseline"
+    - role … "entry" / "take_profit" / "stop_loss"（symbol_baselines の role と同じ）
+    ※判定するときは、いま判定対象の銘柄と role で symbol_baselines を読む。読んだ baseline_json の左右を、symbol_baselines 節と同じ手順で具体的な数値にしてから、この辺の値として使う。
+    ※conditions_json には銘柄コードを書かない。判定のたびに「今チェックしている銘柄」の基準ラインを見に行く。
+    ※工房でプレビューするときも、判定対象の銘柄は必ず選ばせる。チャートを開いているときは、その銘柄を選択欄の初期値にしてよい（選ばなくてよい、という意味ではない）。
+
+  【2. indicator（指標）の指定（左右で使い回す共通形）】
+  【1】で side_type が "indicator" のときに使う、指標の共通形。次の4キーを1セットとする（必須）。
+  - kind … 計算の種類。IndicatorCatalog の kind（一覧で矢印の左側の文字列）と一致させる（現在値も含む）
+  - timeframe … 足。"daily"（日足）/ "weekly"（週足）/ "monthly"（月足）
+    ※現在値でも、日足の終値と週足の終値は別なので timeframe は残す。
+  - params … その kind 固有のパラメータ（期間など）。不要なら空の {} とする
+  - lookback … 何本前の確定足を見るか。整数。初期値は 0
 
   【3. 塊の種類】
   conditions_json に保存するデータは、次のいずれか1つの塊から始まる。
@@ -329,9 +347,9 @@ calculate_all(
 
   ■ node_type が "inline_rule" のとき（必須: node_type, left, operator, right, is_active）
   - node_type … 常に "inline_rule"
-  - left … 左辺。【2. 辺の指定】と同じ形。
+  - left … 左辺。【1. 辺の指定】と同じ形。
   - operator … 比較の種類。例: "<", ">", "<=", ">=", "=", "GC", "DC"
-  - right … 右辺。【2. 辺の指定】と同じ形。
+  - right … 右辺。【1. 辺の指定】と同じ形。
   - is_active
     true なら有効。false なら計算から外す（式からは消さない）。
 
@@ -444,33 +462,80 @@ calculate_all(
 
 
 3-C. トレード／ポジション線（Position / Lines）
-     損切り・利確・平均建値・支持線など
+     エントリー・損切り・利確・支持線など
 -----------------------------------------------------------------
 〈仕様定義〉
-・ユーザーがチャート上に引いた水平線（支持線・抵抗線）、損切りライン（SL）、利確ライン（TP）の座標情報を銘柄ごとに保存する。
-・将来的にトレンドライン（斜め線）やフィボナッチを追加してもデータベース構造を変更しなくて済むようJSONで管理する。
-・※将来的に、資産管理機能で計算された平均建値や、ユーザーが手入力した価格をこのJSONの `average_price` に保存・更新する。チャート描画機能は単純にこのJSONを読み取って線を引く仕組みにするため、自動的にシステム全体が連動する。
+・エントリーライン／利確ライン／損切りライン（役割つきの基準ライン）は、テーブル symbol_baselines に保存する（同節の後述）。固定価格でも指標でもよい。プレイリスト列・チャート表示・工房の左辺／右辺・アラートは、この正本だけを見る。
+・役割の無い水平線（支持線・抵抗線など）は、テーブル④ chart_drawings に保存する。将来のトレンドライン（斜め線）やフィボナッチも chart_drawings（drawings_json）に保存し、水平線と同じく symbol_baselines の役割へコピーできるようにする（切り取りではない。DBの列は増やさず JSON で持つ）。
+・利確・損切りなどを chart_drawings と symbol_baselines の両方に同じ値段で持たない。役割つきは symbol_baselines のみ。
+・chart_drawings 上の描画を、操作一回で symbol_baselines の役割（entry / take_profit / stop_loss）へコピーしてよい。コピーするときは、その時点の内容を baseline_json に書き込む。書き込み後は symbol_baselines が正であり、以後 chart_drawings 側の変更には合わせない。
+・平均建値および資産管理に紐づく価格は扱わない（個人情報・管理コストのため）。
 
 ■ テーブル④：chart_drawings
 
   - id (型: INTEGER) / 主キー・自動連番
   - user_id (型: TEXT) / ユーザー識別ID（デバイス同期用キー）
   - symbol_id (型: TEXT) / 銘柄コード（例: '7203', 'AAPL'）
-  - drawings_json (型: TEXT) / 描画オブジェクトのJSONダンプ
+  - drawings_json (型: TEXT) / 描画オブジェクトのJSONダンプ（役割の無い描画用）
 
 ▼ drawings_json の保存データ例（Cursor解説用）
 {
-  // ── 水平線の描画データ ──
+  // ── 役割の無い水平線（label は表示用の任意文字列） ──
   "horizontal_lines": [
-    {"id": "line_1", "price": 145.5, "color": "red", "label": "Stop Loss", "line_style": "dashed"},
-    {"id": "line_2", "price": 160.0, "color": "green", "label": "Take Profit", "line_style": "solid"}
-  ],
-  // ── ポジションの平均建値（資産管理等との自動連動用） ──
-  "average_price": {
-    "price": 150.0,
-    "visible": true
-  }
+    {"id": "line_1", "price": 145.5, "color": "gray", "label": "支持", "line_style": "dashed"},
+    {"id": "line_2", "price": 160.0, "color": "gray", "label": "抵抗", "line_style": "solid"}
+  ]
 }
+
+
+■ テーブル：symbol_baselines
+（銘柄ごとの役割つき基準ライン。entry / take_profit / stop_loss の正本）
+
+  - id (型: INTEGER) / 主キー・自動連番
+  - user_id (型: TEXT) / ユーザー識別ID（同期および行の特定。同じ銘柄でもユーザーが違えば別行）
+  - symbol_id (型: TEXT) / 銘柄コード（例: '7203', 'AAPL'）
+  - role (型: TEXT) / 役割。"entry"（エントリーライン）/ "take_profit"（利確ライン）/ "stop_loss"（損切りライン）。必要な役割が増えたら値を足してよい
+  - baseline_json (型: TEXT) / 左右2スロットの指定（下記）
+  - updated_at (型: TEXT) / 任意。更新日時。同期や新旧判定用。無くてもよい
+
+※同じ (user_id, symbol_id, role) は1行とする。
+※このテーブルに output_kind は置かない。出力の種類（乖離率など）はプレイリスト列側（columns_json）が持つ。
+
+〈baseline_json〉
+常に left と right の2スロット。各スロットはキー slot_type で区別し、値は "quote_price" / "fixed_price" / "indicator" のいずれか一方。左右の割り当ては自由。
+  ・quote_price … いまの評価用価格。気配を優先し、使えなければ最新終値。必須キー: slot_type
+  ・fixed_price … 固定価格。必須キー: slot_type, value（工房の side_type "number" の value と同じ意味）
+  ・indicator … 指標。必須キー: slot_type, kind, timeframe, params
+    - kind … IndicatorCatalog の kind（一覧で矢印の左側の文字列）。対応する calculate_* で計算する
+    - timeframe … "daily" / "weekly" / "monthly"
+    - params … その kind 用のパラメータ（工房の indicator の params と同じ考え方）
+    - kind が "Bollinger_Bands" のとき、params は config_json の例の直後に書く共通定義に従う（キー band を含む）
+
+
+※期間などの数値はスロット内に書く。計算のたびに chart_settings から取り直さない。
+※比較演算子（">" や "GC" など）は baseline_json に書かない。条件判定はフィルター工房側。
+
+▼ baseline_json の例
+  // 気配と固定8000円
+  { "left": { "slot_type": "quote_price" }, "right": { "slot_type": "fixed_price", "value": 8000 } }
+
+  // 気配と日足MA200
+  {
+    "left": { "slot_type": "quote_price" },
+    "right": { "slot_type": "indicator", "kind": "MA", "timeframe": "daily", "params": { "period": 200 } }
+  }
+
+  // 日足MA50と日足MA200（指標どうし）
+  {
+    "left": { "slot_type": "indicator", "kind": "MA", "timeframe": "daily", "params": { "period": 50 } },
+    "right": { "slot_type": "indicator", "kind": "MA", "timeframe": "daily", "params": { "period": 200 } }
+  }
+
+〈設定の決め方〉
+・例: 「ソニー、日足MA200をエントリーラインに設定しますか？」と確認し、OKならその内容を baseline_json に書き込む。
+・チャート上の MA 等を選ぶきっかけにしてよい。選んだ内容は baseline_json へコピーして書く（チャート上の MA 表示そのものは消えない）。確定後は baseline_json だけを見る。chart_settings の変更には合わせない。
+・チャートにエントリー／利確／損切りの表示ON/OFFを置いてよい。ONのときは本テーブルの該当 role を読み、描く対象のスロット（fixed_price または indicator）に従って線を描く。
+
 
 
 3-D. プレイリスト UI 設定（Playlist UI）
