@@ -299,9 +299,10 @@ calculate_all(
   ・baseline（基準ライン）のとき（必須キー: side_type, role）
     - side_type … 常に "baseline"
     - role … "entry" / "take_profit" / "stop_loss"（symbol_baselines の role と同じ）
-    ※判定するときは、いま判定対象の銘柄と role で symbol_baselines を読む。読んだ baseline_json の左右を、symbol_baselines 節と同じ手順で具体的な数値にしてから、この辺の値として使う。
-    ※conditions_json には銘柄コードを書かない。判定のたびに「今チェックしている銘柄」の基準ラインを見に行く。
-    ※工房でプレビューするときも、判定対象の銘柄は必ず選ばせる。チャートを開いているときは、その銘柄を選択欄の初期値にしてよい（選ばなくてよい、という意味ではない）。
+    ※辺の材料として、ある銘柄を選択し、その銘柄のエントリー／利確／損切り（symbol_baselines の role）を使う、という意味である。チャート上にそれらの線を出すかどうかとは別の話（チャート側は 00_Master_Design.md の 3-C・symbol_baselines）。
+    ※この辺の具体的な数値を出すときは、対象の銘柄と role で symbol_baselines を読みにいく。読んだ baseline_json の左右を、symbol_baselines 節と同じ手順で数値にする。
+    ※conditions_json には銘柄コードを書かない。
+    ※工房でこの辺の値を使用したフィルターを試す・作成する際、side_type に "baseline" を選ぶときは、対象の銘柄を必ず選ばせる。チャートを開いているときは、その銘柄を選択欄の初期値にしてよい（選ばなくてよい、という意味ではない）。
 
   【2. indicator（指標）の指定（左右で使い回す共通形）】
   【1】で side_type が "indicator" のときに使う、指標の共通形。次の4キーを1セットとする（必須）。
