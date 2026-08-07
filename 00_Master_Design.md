@@ -599,32 +599,38 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   - user_id (型: TEXT) / ユーザー識別ID
   - last_playlist_id (型: INTEGER) / 最後に選択していた playlists の id
   - preset_filter_id (型: INTEGER) / NULL許可。場にかけているオレンジ用 user_filters.id（element または condition）。プレイリスト切替でも維持
-  - columns_json (型: TEXT) / 列の定義・左右順・参照する metric・現在のソート状態
-※ columns_json 内の metric_id は、user_metrics の id を指す（外部キー）。
-※ 欄名は metric_id、値は user_metrics.id と同じ番号。
-
+  - columns_json (型: TEXT) / 列の定義・左右順・現在のソート状態。列は類型A（metric）または類型B（baseline）
+※ 類型Aの列では、JSON のキー metric_id に user_metrics の id を入れる（外部キー。値は user_metrics.id と同じ番号）。
+※ 類型Bの列では metric_id を持たない。テーブル symbol_baselines を見に行くのは、銘柄と role で特定する1行である（ローカルでは user_id の照合は不要）。output_kind は、読んだ baseline_json の left / right から得た数値を、どのような関数に渡し、プレイリストのその列・その銘柄のマスにどのような形で出すかの指定である。
 ▼ columns_json の保存データ例
 {
   "columns": [
     // column_id … この列の不変ID（左右を入れ替えても変わらない。ソート指定に使う）
     // slot … 左から何番目か（入れ替えたら付け替える）
-    // metric_id … user_metrics.id。計算の中身はそちら。例: 101 = 7日変化率
-    {"column_id": "col_1", "slot": 1, "metric_id": 101},  // 例: 7日変化率を1列目に表示
-    {"column_id": "col_2", "slot": 2, "metric_id": 102},  // 例: 日足RSI(14)を2列目に表示
-    {"column_id": "col_3", "slot": 3, "metric_id": 103}   // 例: 日足25MA乖離を3列目に表示
+    // column_type … "metric"（類型A）または "baseline"（類型B）
+    // label … 列見出しの表示名
+    // 類型A: metric_id … user_metrics.id。計算の中身はそちら
+    // 類型B: role … symbol_baselines の役割。output_kind … baseline_json の left / right から得た数値の出し方（例: "deviation"）
+    {"column_id": "col_1", "slot": 1, "column_type": "metric", "label": "7日変化率", "metric_id": 101},
+    {"column_id": "col_2", "slot": 2, "column_type": "metric", "label": "日足RSI(14)", "metric_id": 102},
+    {"column_id": "col_3", "slot": 3, "column_type": "metric", "label": "日足25MA乖離", "metric_id": 103},
+    {"column_id": "col_4", "slot": 4, "column_type": "baseline", "label": "エントリーライン乖離率", "role": "entry", "output_kind": "deviation"}
   ],
   // いまどの列で昇順/降順ソートしているか（スロット位置ではなく column_id で指定）
   "sort": {
-    "column_id": "col_2",  // 上の RSI 列でソート。列を左右入れ替えても同じ列を指す
-    "order": "asc"         // 昇順 (asc) / 降順 (desc)
+    "column_id": "col_2",
+    "order": "asc"
   }
 }
-※ metric_id が指す user_metrics の1件について、metric_json（計算の中身）の例：
+※ sort.order の値は "asc"（昇順）または "desc"（降順）のみとする。
+※ 類型Aで metric_id が指す user_metrics の例：
   id=101 → { "kind": "change_rate", "timeframe": "daily", "params": { "period": 7 } }
   id=102 → { "kind": "RSI", "timeframe": "daily", "params": { "period": 14 } }
   id=103 → { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 25 } }
-※ 指標の中身は columns_json に埋め込まない（metric_id で参照する）。
-※ 列ごとの抽出（クリックで順に切替）の詳細は、後述の「指標・列・フィルターの関係」内【列ごとの抽出（クリックで順に切替）】を正とする。
+※ 類型Aでは、指標の中身は columns_json に埋め込まない（metric_id で参照する）。
+※ 類型Bでは、8000や期間200など銘柄ごとの中身は columns_json に書かない（symbol_baselines が持つ）。
+※ output_kind は列を作るときに指定する。いま選べる値は "deviation" のみとする。"deviation" のときは、その銘柄の symbol_baselines（該当 role）の baseline_json にある left / right を数値にし、calculate_deviation に渡した戻り値を、プレイリストのその列・その銘柄のマスに出す。output_kind の値として、あとから値幅（引き算）などを追加してよい。
+※ 列ごとの抽出（クリックで順に切替）の詳細は、後述の「指標・列・フィルターの関係」内【列ごとの抽出（クリックで順に切替）】を正とする。類型Bでも、出した数値に対する extract_chips は類型Aと同じ形で付けてよい。
 
 
 -----------------------------------------------------------------
@@ -632,21 +638,47 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
 -----------------------------------------------------------------
 
 【役割の整理】
-・IndicatorCatalog … アプリが用意する種類の一覧（変化率・RSI など）。コード上の定数。DBテーブルにはしない。
-・user_metrics … 比較なしの計算定義（例: 7日変化率）。主に列の表示と、列ごとの抽出で使う。
-・columns_json … どの列を、どの順で、どの user_metrics を見せるか。いまのソート状態も含む。
-・エレメント … 比較まで含んだ1本の条件。工房で部品として保存・再利用する。中身は自己完結（user_metrics は作らない・参照しない）。
-・完成品 … ユーザーが式を組み立てた条件。直書きが本体。必要なところだけエレメントをポン付けできる。完成品の中に完成品は入れない。
-・オレンジ（場の抽出フィルター）… プレイリストの銘柄を絞り込む。app_ui_settings.preset_filter_id で、エレメントまたは完成品を1つ指定する。
-・水色（銘柄チャートのシグナル網掛け）… 個別チャート上で条件に合う箇所を網掛けする。symbol_signals.filter_id で、エレメントまたは完成品を1つ指定する。
+
+〈アプリ共通〉
+・IndicatorCatalog … アプリが用意する指標の種類の一覧（変化率・RSI など）。コード上の定数。DBテーブルにはしない。
+
+〈プレイリストの列〉
+・columns_json … テーブル app_ui_settings の欄（型: TEXT）。どの列を、どの順で見せるか。いまのソート状態も含む。列は類型A（metric）または類型B（baseline）。
+・テーブル user_metrics … 類型Aの列の計算定義（例: 7日変化率）。列ごとの抽出でも使う。
+・テーブル symbol_baselines … 類型Bの列が見に行く銘柄ごとの基準ライン（3-C）。role は entry / take_profit / stop_loss。
+
+〈フィルター工房〉
+・エレメント（filter_type が element）… 比較まで含んだ1本の条件。工房で部品として保存・再利用する。中身は自己完結（user_metrics は作らない・参照しない）。
+・完成品（filter_type が condition）… ユーザーが式を組み立てた条件。直書きが本体。必要なところだけエレメントをポン付けできる。完成品の中に完成品は入れない。
+
+〈エレメント／完成品の使い道（工房の外）〉
+・オレンジ（場の抽出フィルター）… プレイリストの銘柄を絞り込む。app_ui_settings.preset_filter_id で、エレメント（element）または完成品（condition）を1つ指定する。
+・水色（銘柄チャートのシグナル網掛け）… 個別チャート上で条件に合う箇所を網掛けする。symbol_signals.filter_id で、エレメント（element）または完成品（condition）を1つ指定する。
 
 【＋列の手順】
+列には2種類ある。
+  ・類型A（column_type が "metric"）… 1列について全銘柄が同じ計算内容。例: 3日変化率、全銘柄同じ日足25MA乖離
+  ・類型B（column_type が "baseline"）… 役割（role）は列で共通。中身は銘柄ごとの symbol_baselines。出し方は output_kind。例: エントリーライン乖離率
+
+共通（ここまで同じ）:
   1. ユーザーが＋を押す
-  2. IndicatorCatalog から種類を選ぶ（例: 変化率）
-  3. 必要なパラメータだけ入れる（例: 7・日）
+  2. 候補一覧から1つ選ぶ。一覧には次の両方を出す。
+     - IndicatorCatalog の kind（類型Aへ進む。例: 変化率）
+     - symbol_baselines の role（類型Bへ進む。例: entry＝エントリーライン）
+
+■ 手順2で IndicatorCatalog の kind を選んだとき（類型A）
+  3. その kind に必要なパラメータ入力画面を出し、入力する（例: 7・日）
   4. その内容を user_metrics に1件保存する
-  5. 同時に columns_json に列を1本追加する（column_id / slot / metric_id）。metric_id には、手順4で保存した user_metrics の id を入れる
+  5. columns_json に列を1本追加する（column_id / slot / column_type:"metric" / label / metric_id）。metric_id には手順4の id を入れる
 ※初期は「既存の user_metrics 一覧から選ぶ」画面は出さない
+※このとき user_filters には何も書かない
+
+■ 手順2で role を選んだとき（類型B）
+  3. 続けて出力の種類（output_kind）と表示名（label）を決める。例: output_kind が deviation、label が「エントリーライン乖離率」（role は手順2で選んだもの）
+  4. columns_json に列を1本追加する（column_id / slot / column_type:"baseline" / label / role / output_kind）。user_metrics は作らない
+※各銘柄について、その銘柄と role でテーブル symbol_baselines から1行読む（ローカルでは user_id の照合は不要。）。baseline_json の left / right を、3-C（symbol_baselines）に書いた手順で数値にする。output_kind に指定された内容に従い、その2つの数値を indicators.py（計算工場）内の関数に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
+  例: output_kind が "deviation" のとき、その2つの数値を calculate_deviation に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
+  
 ※このとき user_filters には何も書かない
 
 【列ごとの抽出（クリックで順に切替）】
