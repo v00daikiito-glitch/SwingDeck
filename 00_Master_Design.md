@@ -595,7 +595,7 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   - preset_filter_id (型: INTEGER) / NULL許可。場にかけているオレンジ用 user_filters.id（element または condition）。プレイリスト切替でも維持
   - columns_json (型: TEXT) / 列の定義・左右順・現在のソート状態。列は類型A（metric）または類型B（baseline）
 ※ 類型Aの列では、JSON のキー metric_id に user_metrics の id を入れる（外部キー。値は user_metrics.id と同じ番号）。
-※ 類型Bの列では metric_id を持たない。テーブル symbol_baselines を見に行くのは、銘柄と role で特定する1行である（ローカルでは user_id の照合は不要）。output_kind は、読んだ baseline_json の left / right から得た数値を、どのような関数に渡し、プレイリストのその列・その銘柄のマスにどのような形で出すかの指定である。
+※ 類型Bの列では metric_id を持たない。テーブル symbol_baselines を見に行くのは、銘柄と role で特定する1行である（ローカルでは user_id の照合は不要）。output_kind は、読んだ baseline_json の left / right から得た数値を、工場のどの関数にどう渡してマスに出すかの指定である。出し方の中身は、直後の output_kind の定義を正とする。
 ▼ columns_json の保存データ例
 {
   "columns": [
@@ -623,7 +623,11 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   id=103 → { "kind": "Deviation", "timeframe": "daily", "params": { "target": "SMA", "period": 25 } }
 ※ 類型Aでは、指標の中身は columns_json に埋め込まない（metric_id で参照する）。
 ※ 類型Bでは、8000や期間200など銘柄ごとの中身は columns_json に書かない（symbol_baselines が持つ）。
-※ output_kind は列を作るときに指定する。いま選べる値は "deviation" のみとする。"deviation" のときは、その銘柄の symbol_baselines（該当 role）の baseline_json にある left / right を数値にし、calculate_deviation に渡した戻り値を、プレイリストのその列・その銘柄のマスに出す。output_kind の値として、あとから値幅（引き算）などを追加してよい。
+※ output_kind は列を作るときに指定する。いま選べる値は "deviation" のみとする。"deviation" のときは、次のとおりとする。
+  1. その銘柄の symbol_baselines（該当 role）の baseline_json にある left / right を、3-C（symbol_baselines）に書いた手順でそれぞれ数値にする（quote_price / fixed_price / indicator の解釈は 3-C を正とする）。
+  2. right を基準値、left をその基準と見比べる値（測る値）とする。左右に気配・固定価格・指標のどれを置いてもよいが、「right が基準」という役割は変えない。いまの株価がエントリーから何％かを出したいときの置き方の例: left に quote_price、right にエントリー側（固定価格または指標）。
+  3. 上記の測る値と基準値を calculate_deviation に渡し、その戻り値をその列・その銘柄のマスに出す。乖離率の計算式自体は calculate_deviation の定義を正とする（現場に割り算を直書きしない）。
+※ output_kind の値として、あとから値幅（引き算）などを追加してよい。
 ※ 列ごとの抽出（クリックで順に切替）の詳細は、後述の「指標・列・フィルターの関係」内【列ごとの抽出（クリックで順に切替）】を正とする。類型Bでも、出した数値に対する extract_chips は類型Aと同じ形で付けてよい。
 
 
@@ -642,8 +646,8 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
 ・テーブル symbol_baselines … 類型Bの列が見に行く銘柄ごとの基準ライン（3-C）。role は entry / take_profit / stop_loss。
 
 〈フィルター工房〉
-・エレメント（filter_type が element）… 比較まで含んだ1本の条件。工房で部品として保存・再利用する。中身は自己完結（user_metrics は作らない・参照しない）。
-・完成品（filter_type が condition）… ユーザーが式を組み立てた条件。直書きが本体。必要なところだけエレメントをポン付けできる。完成品の中に完成品は入れない。
+・エレメント（filter_type が element）… 比較まで含んだ1本の条件。工房で部品として保存・再利用する。中身は自己完結とする。
+・完成品（filter_type が condition）… ユーザーが式を組み立てた条件。直書きが本体。エレメントは必須ではない。必要なところだけ部品としてポン付けできる。完成品の中に完成品は入れない。
 
 〈エレメント／完成品の使い道（工房の外）〉
 ・オレンジ（場の抽出フィルター）… プレイリストの銘柄を絞り込む。app_ui_settings.preset_filter_id で、エレメント（element）または完成品（condition）を1つ指定する。
@@ -671,6 +675,7 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   4. columns_json に列を1本追加する（column_id / slot / column_type:"baseline" / label / role / output_kind）。user_metrics は作らない
 ※各銘柄について、その銘柄と role でテーブル symbol_baselines から1行読む（ローカルでは user_id の照合は不要）。baseline_json の left / right を、3-C（symbol_baselines）に書いた手順で数値にする。output_kind に指定された内容に従い、その2つの数値を indicators.py（計算工場）内の関数に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
   例: output_kind が "deviation" のとき、その2つの数値を calculate_deviation に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
+  
 
 【列ごとの抽出（クリックで順に切替）】
 目的：
