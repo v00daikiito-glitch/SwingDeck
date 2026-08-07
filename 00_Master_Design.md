@@ -370,13 +370,7 @@ calculate_all(
     複数本を AND / OR でつなぐときは group を使う。
     filter_reference でエレメントを式に入れてよい（必須ではない）。
     完成品の中に、別の完成品を入れてはならない。
-
-  ※プレイリストに列を追加する操作では、user_filters に行を作らない。
-    列に出す計算の中身は user_metrics に保存する。
-    プレイリストの何列目に、どの user_metrics を表示するかは、app_ui_settings の columns_json に書く。
-    列ごとの抽出（extract_chips）も columns_json 側であり、user_filters とは別である。
-
-  ※フィルター工房でエレメントや完成品を作るとき、user_metrics は作らない。参照もしない。
+    
 
 ▼ conditions_json の保存データ例（完成品。上の定義に対応）
 {
@@ -671,27 +665,22 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   4. その内容を user_metrics に1件保存する
   5. columns_json に列を1本追加する（column_id / slot / column_type:"metric" / label / metric_id）。metric_id には手順4の id を入れる
 ※初期は「既存の user_metrics 一覧から選ぶ」画面は出さない
-※このとき user_filters には何も書かない
 
 ■ 手順2で role を選んだとき（類型B）
   3. 続けて出力の種類（output_kind）と表示名（label）を決める。例: output_kind が deviation、label が「エントリーライン乖離率」（role は手順2で選んだもの）
   4. columns_json に列を1本追加する（column_id / slot / column_type:"baseline" / label / role / output_kind）。user_metrics は作らない
-※各銘柄について、その銘柄と role でテーブル symbol_baselines から1行読む（ローカルでは user_id の照合は不要。）。baseline_json の left / right を、3-C（symbol_baselines）に書いた手順で数値にする。output_kind に指定された内容に従い、その2つの数値を indicators.py（計算工場）内の関数に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
+※各銘柄について、その銘柄と role でテーブル symbol_baselines から1行読む（ローカルでは user_id の照合は不要）。baseline_json の left / right を、3-C（symbol_baselines）に書いた手順で数値にする。output_kind に指定された内容に従い、その2つの数値を indicators.py（計算工場）内の関数に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
   例: output_kind が "deviation" のとき、その2つの数値を calculate_deviation に渡し、戻り値をプレイリストのその列・その銘柄のマスに出す。
-  
-※このとき user_filters には何も書かない
 
 【列ごとの抽出（クリックで順に切替）】
 目的：
 ・ある列（例: 7日変化率）について、閾値つきの絞り込みを切り替える
 ・列の見出し付近などをクリックするたびに、候補が順番に切り替わる
   例のサイクル： なし → 3%以下 → 5%以下 → 10%以下 → 15%以下 → なし → …
-・候補の閾値は、ユーザーが追加・変更して保存できる
+・候補の閾値や比較の向き（以上・以下など）は、ユーザーが追加・変更して保存できる
 
 前提：
-・計算の中身は、その列の metric_id（user_metrics）を使う。候補を増やしても user_metrics は増やさない
-・各候補が持つのは「どう比べるか」だけ（例: 「以下」と「3」）
-・場全体のオレンジ抽出（preset_filter_id）とは別物。列に付く操作である
+・絞り込みのために、app_ui_settings の columns_json 各列にある extract_chips の閾値・比較の向き（operator / value）と比較する対象は、その列の各セルに表示されている値である。その値は、類型Aなら metric_id（user_metrics）から出したもの、類型Bなら銘柄と role で symbol_baselines を読み output_kind に従って出したものである
 
 保存場所：
 ・各列の定義の中に持つ（columns_json の各列）。別テーブルは当面作らない
@@ -702,10 +691,12 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   - value … 比べる数値（例: 3 なら 3%）
   - active_chip_id … いま選ばれている候補の chip_id。絞り込みなしのときは null
 
-▼ 列の保存例
+▼ 列の保存例（類型A）
 {
   "column_id": "col_1",
   "slot": 1,
+  "column_type": "metric",
+  "label": "7日変化率",
   "metric_id": 101,
   "extract_chips": [
     { "chip_id": "c1", "operator": "<=", "value": 3 },
@@ -715,42 +706,23 @@ JSON の kind は、次のいずれかと一致させる。勝手なキー名を
   ],
   "active_chip_id": "c2"
 }
-※ operator と value は、その列の metric_id が計算した数値に対して使う
-※ 初期の候補（3 / 5 / 10 / 15 など）は、指標の種類ごとにアプリが用意してよい。ユーザーが足した候補も同じ形で extract_chips に入れる
+※ operator と value は、その列の各セルの表示値に対して使う（類型Aなら metric_id から出した値、類型Bなら output_kind まで通した値）
+※ 初期の候補（3 / 5 / 10 / 15 など）は、列の種類ごとにアプリが用意してよい。ユーザーが足した候補も同じ形で extract_chips に入れる
 ※ 有効な候補は、その列について同時に1つだけ。クリックするたびに次の候補へ進み、末尾の次は「なし（active_chip_id = null）」に戻る
 
-実装の流れ：
-  1. 列の値は metric_id から計算する（通常の列表示と同じ）
-  2. active_chip_id があるときだけ、その候補の operator と value で銘柄を絞り込む
-  3. 候補の追加・編集をしたら extract_chips を更新して保存する
-  4. クリックされたら、候補リストの次へ active_chip_id を進めて保存する
+【見出しクリックで候補を切り替えるとき】
+  1. クリックにより、extract_chips 内の active_chip_id を次の候補へ進める（末尾の次は null＝絞り込みなし）
+  2. 進めた結果は columns_json に保存される
+  3. active_chip_id があるときだけ、その候補の operator / value と各銘柄のその列の表示値を比べ、当てはまらない銘柄を隠す
 
-やらないこと：
-・候補を増やすたびに user_filters や user_metrics を新規作成する
-・候補を完成品や場のオレンジ（preset_filter_id）へ自動変換する
+【候補を追加・編集するとき】
+  1. extract_chips（operator / value など）を更新する
+  2. 更新結果は columns_json に保存される
 
 【列を消すとき】
-・columns_json からその列を消す
-・その metric_id を、他の列や列ごとの抽出候補（extract_chips）が使っていなければ、user_metrics からも消す
-・まだ使っていれば user_metrics は残す
-
-【工房（エレメント／完成品）】
-・完成品は、直書きで式を組むのが基本である
-・エレメントは必須ではない。繰り返し使う条件だけ部品にして、完成品から参照できる
-・工房でエレメントを一から作るとき、user_metrics は作らないし参照しない
-・列に対して extract_chips（比較の候補）をかけて銘柄を絞り込む。工房のエレメントとは別物なので混ぜない
-
-【計算への渡し方】
-・表示中の列について、metric_id から user_metrics の metric_json を集め、calculate_all に渡す
-・オレンジ／水色が付いているときは、指定されたエレメントまたは完成品の中身を読み取り、同様に計算に使う
-・戻ってきた値を、列の表示・ソート・抽出・網掛けに使う
-
-【やらない】
-・列を足すたびに user_filters へ自動で行を作る
-・オレンジ／水色にエレメントを付けたとき、裏で「そのエレメントだけの完成品」を自動作成して増やす
-
-
-
+・プレイリストからその列を消すとき、app_ui_settings の columns_json から該当列の定義を消す。extract_chips などの設定も一緒に消える
+・類型Aを消すとき … その列の metric_id を、他の列がまだ使っていなければ user_metrics からも消す。他の列が使っていれば残す
+・類型Bを消すとき … symbol_baselines の行は消さない（基準ラインの定義はチャート側に残る）
 
 3-E. プレイリスト・監視銘柄・Hold（Playlist / Watchlist / Hold）
 =================================================================
